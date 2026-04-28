@@ -191,18 +191,21 @@ async def tool_query_graph(
 ) -> QueryGraphOutput:
     """Validate, render, and (unless ``dry_run``) execute a plan.
 
-    The effective row limit is computed *before* rendering so that the
-    rendered ``LIMIT`` reflects the smaller of the request-level ``max_rows``
-    and the policy maximum. This protects remote endpoints from being asked
-    to materialize unbounded results before truncation.
+    The effective row limit is computed and applied to the plan's top-level
+    ``LIMIT`` *before* validation. This means a plan whose user-supplied
+    ``LIMIT`` exceeds ``policy.max_limit`` can still be safely executed via
+    ``query_graph(max_rows=...)`` — the cap reduces it to a permissible
+    value, and validation succeeds. ``render_sparql`` continues to validate
+    user-supplied plans directly without this cap.
     """
-    validation = validator.validate(inp.plan)
+    effective_max_rows = min(inp.max_rows or policy.default_limit, policy.max_limit)
+    capped_plan = _cap_top_level_limit(inp.plan, effective_max_rows)
+
+    validation = validator.validate(capped_plan)
     out = QueryGraphOutput(validation=validation, dry_run=inp.dry_run)
     if not validation.ok:
         return out
 
-    effective_max_rows = min(inp.max_rows or policy.default_limit, policy.max_limit)
-    capped_plan = _cap_top_level_limit(inp.plan, effective_max_rows)
     rendered = renderer.render(capped_plan)
     out = out.model_copy(update={"rendered": rendered})
     if inp.dry_run:
@@ -298,15 +301,17 @@ async def tool_execute_sparql_raw(
     effective_max_rows = min(inp.max_rows or policy.default_limit, policy.max_limit)
 
     if inferred in ("select", "construct"):
-        top_limit = find_top_level_limit(tokens)
-        if top_limit is None:
+        scan = find_top_level_limit(tokens)
+        if scan.error is not None:
+            raise PermissionError(f"raw query LIMIT is invalid: {scan.error}")
+        if not scan.found or scan.value is None:
             raise PermissionError(
                 "raw SELECT/CONSTRUCT queries must include an explicit "
                 f"top-level LIMIT no greater than {effective_max_rows}"
             )
-        if top_limit > effective_max_rows:
+        if scan.value > effective_max_rows:
             raise PermissionError(
-                f"raw query top-level LIMIT {top_limit} exceeds the "
+                f"raw query top-level LIMIT {scan.value} exceeds the "
                 f"effective max_rows {effective_max_rows}"
             )
 
@@ -370,59 +375,20 @@ def _build_explanation(
     return "\n".join(lines)
 
 
-# --- Backwards-compatible shims for the previous string-preprocessing API.
-# The real safety logic now lives in ``graph_mcp.mcp_tools.sparql_scanner``.
-
-
-def _strip_sparql_comments_and_strings(sparql: str) -> str:
-    """Replace string literals and comments with spaces (legacy helper).
-
-    Preserved for tests that imported it directly. The production path uses
-    :func:`graph_mcp.mcp_tools.sparql_scanner.tokenize` instead.
-    """
-    out: list[str] = []
-    i = 0
-    n = len(sparql)
-    while i < n:
-        c = sparql[i]
-        if c == "#":
-            while i < n and sparql[i] != "\n":
-                out.append(" ")
-                i += 1
-            continue
-        if sparql.startswith('"""', i) or sparql.startswith("'''", i):
-            quote = sparql[i : i + 3]
-            out.append("   ")
-            i += 3
-            while i < n and not sparql.startswith(quote, i):
-                out.append(" " if sparql[i] != "\n" else "\n")
-                i += 1
-            if i < n:
-                out.append("   ")
-                i += 3
-            continue
-        if c in ('"', "'"):
-            quote = c
-            out.append(" ")
-            i += 1
-            while i < n and sparql[i] != quote:
-                if sparql[i] == "\\" and i + 1 < n:
-                    out.append("  ")
-                    i += 2
-                    continue
-                out.append(" " if sparql[i] != "\n" else "\n")
-                i += 1
-            if i < n:
-                out.append(" ")
-                i += 1
-            continue
-        out.append(c)
-        i += 1
-    return "".join(out)
+# --- Compatibility shims (NOT for new code) -------------------------------
+# These thin wrappers exist solely so existing callers/tests that historically
+# took a SPARQL string can keep working. The real safety logic lives in
+# :mod:`graph_mcp.mcp_tools.sparql_scanner`. New code should call the
+# scanner's :func:`tokenize` plus :func:`infer_query_type` /
+# :func:`reject_unsafe_raw` directly so the token list is shared.
 
 
 def _infer_query_type(sparql: str) -> Literal["select", "ask", "construct"]:
-    """Legacy wrapper around the scanner's ``infer_query_type``."""
+    """**Compatibility-only.** Wraps the scanner's :func:`infer_query_type`.
+
+    Tokenizes the input and delegates. New callers should keep the token list
+    around to avoid re-tokenizing for downstream safety checks.
+    """
     from graph_mcp.mcp_tools.sparql_scanner import _ScannerError, tokenize
 
     try:
@@ -433,7 +399,11 @@ def _infer_query_type(sparql: str) -> Literal["select", "ask", "construct"]:
 
 
 def _reject_unsafe_raw(sparql: str, policy: SecurityPolicy) -> None:
-    """Legacy wrapper around the scanner's ``reject_unsafe_raw``."""
+    """**Compatibility-only.** Wraps the scanner's :func:`reject_unsafe_raw`.
+
+    Production code should call the scanner directly so the token list is
+    shared between the safety check and downstream LIMIT inspection.
+    """
     reject_unsafe_raw(sparql, allowed_service_endpoints=policy.allowed_service_endpoints)
 
 

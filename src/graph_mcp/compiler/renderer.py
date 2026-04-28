@@ -208,9 +208,24 @@ class SparqlRenderer:
     # --- Prefixes ----------------------------------------------------
 
     def _collect_prefixes(self, plan: QueryPlan) -> dict[str, str]:
-        """Merge plan prefixes with sane defaults; plan wins on conflict."""
+        """Merge plan prefixes with sane defaults.
+
+        Plan declarations win on conflict — but only when the policy permits
+        overriding built-in prefixes. Otherwise the canonical IRI of any
+        built-in prefix is preserved, matching the validator's behavior.
+        """
         out = dict(DEFAULT_PREFIXES)
         for p in plan.prefixes:
+            builtin = DEFAULT_PREFIXES.get(p.prefix)
+            if (
+                builtin is not None
+                and builtin != p.iri
+                and not self.policy.allow_default_prefix_override
+            ):
+                # Validator has already rejected this plan; if the renderer is
+                # called anyway, keep the canonical built-in IRI rather than
+                # quietly emitting the attacker-supplied one.
+                continue
             out[p.prefix] = p.iri
         return out
 

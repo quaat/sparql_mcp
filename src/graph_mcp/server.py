@@ -6,7 +6,7 @@ import argparse
 from typing import TYPE_CHECKING
 
 from graph_mcp.compiler import QueryPlanValidator, SparqlRenderer
-from graph_mcp.config import Settings, load_settings
+from graph_mcp.config import ConfigurationError, Settings, load_settings
 from graph_mcp.graph import (
     GraphEndpoint,
     HttpSparqlEndpoint,
@@ -76,20 +76,28 @@ def build_schema_provider(settings: Settings, endpoint: GraphEndpoint) -> Schema
 
     - ``static``: an empty :class:`StaticSchemaProvider`.
     - ``sparql``: a :class:`SparqlSchemaProvider` against the supplied endpoint.
+      Requires ``GRAPH_MCP_ENDPOINT_URL`` or ``GRAPH_MCP_LOCAL_GRAPH_FILE`` to
+      be set; otherwise raises :class:`ConfigurationError` so the operator is
+      not silently given an empty in-memory provider.
     - ``auto`` (default): use ``SparqlSchemaProvider`` when an endpoint URL or
       a local graph file is configured; otherwise fall back to static.
     """
     from graph_mcp.models.literals import DEFAULT_PREFIXES
 
     mode = settings.schema_provider
+    has_real_endpoint = settings.endpoint_url is not None or settings.local_graph_file is not None
     if mode == "static":
         return StaticSchemaProvider(SchemaSnapshot())
-    if mode == "auto":
-        has_real_endpoint = (
-            settings.endpoint_url is not None or settings.local_graph_file is not None
+    if mode == "sparql" and not has_real_endpoint:
+        raise ConfigurationError(
+            "GRAPH_MCP_SCHEMA_PROVIDER=sparql requires a configured graph "
+            "source: set GRAPH_MCP_ENDPOINT_URL or "
+            "GRAPH_MCP_LOCAL_GRAPH_FILE. To run without a real source, use "
+            "GRAPH_MCP_SCHEMA_PROVIDER=auto (falls back to static) or "
+            "GRAPH_MCP_SCHEMA_PROVIDER=static."
         )
-        if not has_real_endpoint:
-            return StaticSchemaProvider(SchemaSnapshot())
+    if mode == "auto" and not has_real_endpoint:
+        return StaticSchemaProvider(SchemaSnapshot())
     cfg = SparqlDiscoveryConfig(
         timeout_ms=settings.schema_discovery_timeout_ms,
         max_classes=settings.schema_max_classes,

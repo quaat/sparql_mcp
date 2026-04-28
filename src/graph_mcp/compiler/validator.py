@@ -151,16 +151,22 @@ class QueryPlanValidator:
         from graph_mcp.models.literals import DEFAULT_PREFIXES
 
         ctx = _Ctx()
-        # Build the prefix map and detect conflicts (same prefix → different IRI).
-        ctx.prefixes = {}
+        # Seed the prefix map with the built-in defaults so that plans that
+        # use ``rdf:type``, ``rdfs:label``, ``xsd:date`` etc. without an
+        # explicit declaration validate consistently with the renderer (which
+        # always emits PREFIX declarations for the defaults).
+        ctx.prefixes = dict(DEFAULT_PREFIXES)
+        # Track plan-declared prefixes for duplicate detection.
+        declared: dict[str, str] = {}
         for p in plan.prefixes:
-            existing = ctx.prefixes.get(p.prefix)
+            existing = declared.get(p.prefix)
             if existing is not None and existing != p.iri:
                 ctx.error(
                     "prefix_conflict",
                     f"prefix {p.prefix!r} declared twice with different IRIs: "
                     f"{existing!r} vs {p.iri!r}",
                 )
+            declared[p.prefix] = p.iri
             # Reject overriding well-known built-in prefixes unless policy permits.
             builtin = DEFAULT_PREFIXES.get(p.prefix)
             if (
@@ -178,6 +184,9 @@ class QueryPlanValidator:
                         "GRAPH_MCP_ALLOW_DEFAULT_PREFIX_OVERRIDE=true to permit."
                     ),
                 )
+                # Keep the built-in IRI so that downstream prefix resolution
+                # remains consistent with the renderer's output.
+                continue
             ctx.prefixes[p.prefix] = p.iri
         outer = _Scope()
 

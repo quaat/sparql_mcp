@@ -762,6 +762,18 @@ def run_planner_workflow(
 
 
 # --- PydanticAI planner (optional) -----------------------------------------
+#
+# Scope note (Priority 8): the PydanticAI planner here is a benchmarking
+# harness for the evals runner, not a production planner. It injects schema
+# context (classes, properties, prefixes, named graphs, individuals) into
+# the system prompt and runs the agent in a single-output mode rather than
+# wiring a PydanticAI ``@agent.tool`` for term resolution.
+#
+# Tool-backed term resolution is **out of scope** for the MCP server
+# package: the server already exposes ``resolve_terms`` as an MCP tool, so
+# host agents (Claude Code, custom agents) can invoke it directly. Adding a
+# parallel PydanticAI tool here would duplicate that surface inside the
+# evals harness without changing what production hosts see.
 
 
 _SYSTEM_PROMPT = """\

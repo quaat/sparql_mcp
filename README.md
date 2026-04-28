@@ -111,7 +111,7 @@ All settings come from environment variables (see `.env.example`):
 | Mode | Behavior |
 | --- | --- |
 | `static` | Always use `StaticSchemaProvider`. Resources return only what the host injects via the `schema=` argument to `build_server`. |
-| `sparql` | Use `SparqlSchemaProvider` and require an endpoint. Discovery runs at startup (configurable) and on every `refresh_schema` tool call. |
+| `sparql` | Use `SparqlSchemaProvider` and require an endpoint. Discovery runs at startup (configurable) and on every `refresh_schema` tool call. **Fail-fast:** if neither `GRAPH_MCP_ENDPOINT_URL` nor `GRAPH_MCP_LOCAL_GRAPH_FILE` is set, the server raises `ConfigurationError` instead of silently using an empty in-memory graph. |
 | `auto` (default) | Use `SparqlSchemaProvider` when `GRAPH_MCP_ENDPOINT_URL` or `GRAPH_MCP_LOCAL_GRAPH_FILE` is set; otherwise fall back to `static`. |
 
 The `SparqlSchemaProvider` discovers:
@@ -401,6 +401,14 @@ blocker for you, please open an issue.
 - **LLM eval is opt-in.** The PydanticAI planner is enabled by
   `pip install -e .[ai]`. Running it requires an API key and is not part
   of CI.
+- **PydanticAI tool-backed term resolution is out of scope** for this
+  package. The optional PydanticAI planner currently receives schema
+  context in the prompt but does not yet use live PydanticAI tool calls
+  for term resolution. MCP hosts that need tool-backed resolution can
+  invoke the server's existing ``resolve_terms`` MCP tool directly. The
+  evals agent in ``evals/agent.py`` is intentionally a thin benchmarking
+  harness — production-grade term-resolution wiring belongs in the host
+  agent, not the MCP server.
 - **Raw SPARQL.** Disabled by default. When enabled, the pre-flight check
   is a token-aware scanner — it tracks string/IRI/comment states and
   rejects update keywords, DESCRIBE, and unallowlisted SERVICE — but it is

@@ -9,6 +9,16 @@ from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+class ConfigurationError(RuntimeError):
+    """Raised when the operator's environment configuration is internally
+    inconsistent — e.g. ``GRAPH_MCP_SCHEMA_PROVIDER=sparql`` was specified
+    explicitly but neither an endpoint URL nor a local graph file is set.
+
+    The server fails fast on these rather than silently degrading, since
+    silent degradation can hide misconfigurations in production.
+    """
+
+
 def _split_csv(value: str | list[str] | None) -> list[str]:
     if value is None:
         return []

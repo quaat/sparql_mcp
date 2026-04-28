@@ -198,22 +198,61 @@ def test_infer_query_type_describe_raises() -> None:
 
 def test_find_top_level_limit_simple() -> None:
     tokens = tokenize("SELECT ?x WHERE { ?x ?y ?z } LIMIT 25")
-    assert find_top_level_limit(tokens) == 25
+    res = find_top_level_limit(tokens)
+    assert res.found
+    assert res.value == 25
+    assert res.error is None
 
 
-def test_find_top_level_limit_returns_none_when_only_inside_subquery() -> None:
+def test_find_top_level_limit_returns_not_found_when_only_inside_subquery() -> None:
     tokens = tokenize("SELECT ?x WHERE { { SELECT ?x WHERE { ?x ?y ?z } LIMIT 5 } }")
-    assert find_top_level_limit(tokens) is None
+    res = find_top_level_limit(tokens)
+    assert not res.found
+    assert res.value is None
 
 
 def test_find_top_level_limit_picks_the_outer_one() -> None:
     tokens = tokenize("SELECT ?x WHERE { { SELECT ?x WHERE { ?x ?y ?z } LIMIT 5 } } LIMIT 50")
-    assert find_top_level_limit(tokens) == 50
+    res = find_top_level_limit(tokens)
+    assert res.found
+    assert res.value == 50
 
 
 def test_find_top_level_limit_after_offset() -> None:
     tokens = tokenize("SELECT ?x WHERE { ?x ?y ?z } OFFSET 5 LIMIT 10")
-    assert find_top_level_limit(tokens) == 10
+    res = find_top_level_limit(tokens)
+    assert res.found
+    assert res.value == 10
+
+
+def test_find_top_level_limit_negative_is_error() -> None:
+    tokens = tokenize("SELECT ?x WHERE { ?x ?y ?z } LIMIT -1")
+    res = find_top_level_limit(tokens)
+    assert res.error is not None
+    assert res.value is None
+
+
+def test_find_top_level_limit_decimal_is_error() -> None:
+    tokens = tokenize("SELECT ?x WHERE { ?x ?y ?z } LIMIT 1.5")
+    res = find_top_level_limit(tokens)
+    assert res.error is not None
+    assert res.value is None
+
+
+def test_find_top_level_limit_multiple_top_level_is_error() -> None:
+    tokens = tokenize("SELECT ?x WHERE { ?x ?y ?z } LIMIT 5 LIMIT 10")
+    res = find_top_level_limit(tokens)
+    assert res.error is not None
+    assert res.value is None
+    assert res.count == 2
+
+
+def test_find_top_level_limit_zero_is_allowed() -> None:
+    tokens = tokenize("SELECT ?x WHERE { ?x ?y ?z } LIMIT 0")
+    res = find_top_level_limit(tokens)
+    assert res.found
+    assert res.value == 0
+    assert res.error is None
 
 
 # --- End-to-end via the tool path -----------------------------------------

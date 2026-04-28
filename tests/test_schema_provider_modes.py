@@ -170,3 +170,44 @@ def test_refresh_schema_input_validates() -> None:
     assert a.force is False
     b = RefreshSchemaInput(force=True)
     assert b.force is True
+
+
+# --- Priority 4: explicit sparql mode must fail fast ----------------------
+
+
+def test_schema_provider_sparql_requires_endpoint_or_local_file() -> None:
+    """`schema_provider=sparql` without a real source must raise ConfigurationError."""
+    from graph_mcp.config import ConfigurationError
+
+    settings = Settings(schema_provider="sparql")  # no endpoint, no local file
+    endpoint = LocalRdflibEndpoint()
+    with pytest.raises(ConfigurationError, match="sparql"):
+        build_schema_provider(settings, endpoint)
+
+
+def test_schema_provider_auto_without_source_uses_static() -> None:
+    settings = Settings(schema_provider="auto")
+    endpoint = LocalRdflibEndpoint()
+    provider = build_schema_provider(settings, endpoint)
+    assert isinstance(provider, StaticSchemaProvider)
+
+
+def test_schema_provider_auto_with_endpoint_uses_sparql() -> None:
+    settings = Settings(schema_provider="auto", endpoint_url="http://localhost/sparql")
+    endpoint = LocalRdflibEndpoint()
+    provider = build_schema_provider(settings, endpoint)
+    assert isinstance(provider, SparqlSchemaProvider)
+
+
+def test_schema_provider_auto_with_local_file_uses_sparql() -> None:
+    settings = Settings(schema_provider="auto", local_graph_file=EVAL_GRAPH)
+    endpoint = build_endpoint(settings)
+    provider = build_schema_provider(settings, endpoint)
+    assert isinstance(provider, SparqlSchemaProvider)
+
+
+def test_schema_provider_static_ignores_endpoint() -> None:
+    settings = Settings(schema_provider="static", endpoint_url="http://localhost/sparql")
+    endpoint = LocalRdflibEndpoint()
+    provider = build_schema_provider(settings, endpoint)
+    assert isinstance(provider, StaticSchemaProvider)

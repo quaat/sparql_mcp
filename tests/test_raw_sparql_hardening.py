@@ -12,7 +12,6 @@ from graph_mcp.mcp_tools.tools import (
     RawSparqlInput,
     _infer_query_type,
     _reject_unsafe_raw,
-    _strip_sparql_comments_and_strings,
     tool_execute_sparql_raw,
 )
 from graph_mcp.security.policy import SecurityPolicy
@@ -86,13 +85,27 @@ def test_raw_service_with_prefixed_name_is_rejected() -> None:
         _reject_unsafe_raw(sparql, policy)
 
 
-def test_strip_comments_and_strings() -> None:
-    src = '# header\nSELECT ?s WHERE { ?s ?p "INSERT in str" } # tail'
-    cleaned = _strip_sparql_comments_and_strings(src)
-    assert "INSERT" not in cleaned.upper()
-    assert "header" not in cleaned
-    # Structure preserved enough to find SELECT/WHERE.
-    assert "SELECT" in cleaned.upper()
+def test_compat_reject_unsafe_raw_does_not_treat_hash_inside_iri_as_comment() -> None:
+    """Compatibility wrapper inherits the scanner's IRI-hash safety semantics.
+
+    The legacy string-based pre-processor would have treated ``#`` inside
+    ``<http://example.org/#frag>`` as the start of a comment, hiding any
+    keywords after the IRI on the same line. The scanner-based wrapper used
+    today must not.
+    """
+    policy = _enabled_policy()
+    # An IRI with a fragment, on the same line as a closing brace and a
+    # legitimate query keyword. If `#` were misinterpreted as a comment,
+    # the closing brace and `LIMIT 5` would vanish and the query would parse
+    # incorrectly.
+    sparql = "SELECT ?s WHERE { ?s ?p <http://example.org/#frag> } LIMIT 5"
+    # No raise: the IRI's `#` is not a comment marker.
+    _reject_unsafe_raw(sparql, policy)
+
+
+def test_compat_infer_query_type_does_not_treat_hash_inside_iri_as_comment() -> None:
+    sparql = "SELECT ?s WHERE { ?s ?p <http://example.org/#frag> }"
+    assert _infer_query_type(sparql) == "select"
 
 
 def test_infer_query_type_select() -> None:
@@ -136,3 +149,106 @@ async def test_raw_select_executes_when_correct() -> None:
     out = await tool_execute_sparql_raw(inp, endpoint, policy)
     assert out.raw_mode is True
     assert out.result.kind == "select"
+
+
+# --- Priority 3: raw LIMIT validation -------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_raw_negative_limit_is_rejected() -> None:
+    policy = _enabled_policy()
+    endpoint = LocalRdflibEndpoint.from_turtle_file(FIXTURE)
+    inp = RawSparqlInput(
+        sparql="SELECT * WHERE { ?s ?p ?o } LIMIT -1",
+        expected_query_type="select",
+    )
+    with pytest.raises(PermissionError, match="LIMIT"):
+        await tool_execute_sparql_raw(inp, endpoint, policy)
+
+
+@pytest.mark.asyncio
+async def test_raw_decimal_limit_is_rejected() -> None:
+    policy = _enabled_policy()
+    endpoint = LocalRdflibEndpoint.from_turtle_file(FIXTURE)
+    inp = RawSparqlInput(
+        sparql="SELECT * WHERE { ?s ?p ?o } LIMIT 10.5",
+        expected_query_type="select",
+    )
+    with pytest.raises(PermissionError, match="LIMIT"):
+        await tool_execute_sparql_raw(inp, endpoint, policy)
+
+
+@pytest.mark.asyncio
+async def test_raw_plus_signed_limit_is_rejected() -> None:
+    policy = _enabled_policy()
+    endpoint = LocalRdflibEndpoint.from_turtle_file(FIXTURE)
+    inp = RawSparqlInput(
+        sparql="SELECT * WHERE { ?s ?p ?o } LIMIT +5",
+        expected_query_type="select",
+    )
+    with pytest.raises(PermissionError, match="LIMIT"):
+        await tool_execute_sparql_raw(inp, endpoint, policy)
+
+
+@pytest.mark.asyncio
+async def test_raw_multiple_top_level_limits_are_rejected() -> None:
+    policy = _enabled_policy()
+    endpoint = LocalRdflibEndpoint.from_turtle_file(FIXTURE)
+    inp = RawSparqlInput(
+        sparql="SELECT * WHERE { ?s ?p ?o } LIMIT 5 LIMIT 10",
+        expected_query_type="select",
+    )
+    with pytest.raises(PermissionError, match="LIMIT"):
+        await tool_execute_sparql_raw(inp, endpoint, policy)
+
+
+@pytest.mark.asyncio
+async def test_raw_limit_inside_subquery_does_not_satisfy_top_level_requirement() -> None:
+    policy = _enabled_policy()
+    endpoint = LocalRdflibEndpoint.from_turtle_file(FIXTURE)
+    inp = RawSparqlInput(
+        # LIMIT 5 is inside the subquery's braces, not at top level.
+        sparql="SELECT ?s WHERE { { SELECT ?s WHERE { ?s ?p ?o } LIMIT 5 } }",
+        expected_query_type="select",
+    )
+    with pytest.raises(PermissionError, match="top-level LIMIT"):
+        await tool_execute_sparql_raw(inp, endpoint, policy)
+
+
+@pytest.mark.asyncio
+async def test_raw_zero_limit_is_allowed() -> None:
+    """LIMIT 0 is a safe, debug-friendly construct and is permitted."""
+    policy = _enabled_policy()
+    endpoint = LocalRdflibEndpoint.from_turtle_file(FIXTURE)
+    inp = RawSparqlInput(
+        sparql="SELECT ?s WHERE { ?s ?p ?o } LIMIT 0",
+        expected_query_type="select",
+    )
+    out = await tool_execute_sparql_raw(inp, endpoint, policy)
+    assert out.raw_mode is True
+
+
+@pytest.mark.asyncio
+async def test_raw_positive_limit_within_cap_is_allowed() -> None:
+    policy = _enabled_policy()
+    endpoint = LocalRdflibEndpoint.from_turtle_file(FIXTURE)
+    inp = RawSparqlInput(
+        sparql="SELECT ?s WHERE { ?s ?p ?o } LIMIT 3",
+        expected_query_type="select",
+        max_rows=10,
+    )
+    out = await tool_execute_sparql_raw(inp, endpoint, policy)
+    assert out.raw_mode is True
+
+
+@pytest.mark.asyncio
+async def test_raw_limit_above_cap_is_rejected() -> None:
+    policy = _enabled_policy()
+    endpoint = LocalRdflibEndpoint.from_turtle_file(FIXTURE)
+    inp = RawSparqlInput(
+        sparql="SELECT ?s WHERE { ?s ?p ?o } LIMIT 9999",
+        expected_query_type="select",
+        max_rows=10,
+    )
+    with pytest.raises(PermissionError, match="exceeds"):
+        await tool_execute_sparql_raw(inp, endpoint, policy)

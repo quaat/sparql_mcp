@@ -119,16 +119,74 @@ class HttpSparqlEndpoint:
         ctype = resp.headers.get("content-type", "").lower()
 
         if query_type == "ask":
-            data = resp.json()
-            return AskResult(boolean=bool(data.get("boolean", False)), metadata=meta)
+            return self._parse_ask_response(resp, ctype, meta)
 
         if query_type == "construct":
-            return self._parse_construct_response(resp.text, ctype, meta)
+            return self._parse_construct_response(resp.text, ctype, meta, max_rows=max_rows)
 
+        # SELECT
+        return self._parse_select_response(resp, ctype, meta, max_rows=max_rows)
+
+    def _parse_ask_response(
+        self, resp: httpx.Response, ctype: str, meta: QueryExecutionMetadata
+    ) -> AskResult:
+        """Parse a SPARQL ASK response. Validates content-type and shape."""
         if "json" not in ctype:
-            raise EndpointError(f"unexpected content-type: {ctype}")
+            raise EndpointError(
+                f"ASK response has unexpected content-type {ctype!r}; "
+                "expected a SPARQL JSON results document"
+            )
+        try:
+            data = resp.json()
+        except ValueError as exc:
+            raise EndpointError(f"ASK response is not valid JSON: {exc}") from exc
+        if not isinstance(data, dict) or "boolean" not in data:
+            raise EndpointError("ASK response is missing the required top-level 'boolean' field")
+        boolean = data["boolean"]
+        if not isinstance(boolean, bool):
+            raise EndpointError(f"ASK response 'boolean' field is not a JSON boolean: {boolean!r}")
+        return AskResult(boolean=boolean, metadata=meta)
 
-        result = normalize_sparql_json(resp.json(), meta)
+    def _parse_select_response(
+        self,
+        resp: httpx.Response,
+        ctype: str,
+        meta: QueryExecutionMetadata,
+        *,
+        max_rows: int,
+    ) -> QueryResult:
+        """Parse a SPARQL SELECT response, normalizing failures to EndpointError."""
+        if "json" not in ctype:
+            raise EndpointError(
+                f"SELECT response has unexpected content-type {ctype!r}; "
+                "expected a SPARQL JSON results document"
+            )
+        try:
+            payload = resp.json()
+        except ValueError as exc:
+            raise EndpointError(f"SELECT response is not valid JSON: {exc}") from exc
+        if not isinstance(payload, dict):
+            raise EndpointError(
+                f"SELECT response top-level is not a JSON object (got {type(payload).__name__})"
+            )
+        head = payload.get("head")
+        results = payload.get("results")
+        # SPARQL 1.1 results JSON requires both head.vars and results.bindings.
+        if not isinstance(head, dict) or "vars" not in head:
+            raise EndpointError(
+                "SELECT response is missing 'head.vars'; not a valid SPARQL JSON document"
+            )
+        if not isinstance(results, dict) or not isinstance(results.get("bindings"), list):
+            raise EndpointError(
+                "SELECT response is missing 'results.bindings' array; "
+                "not a valid SPARQL JSON document"
+            )
+
+        try:
+            result = normalize_sparql_json(payload, meta)
+        except (KeyError, AttributeError, TypeError, ValueError) as exc:
+            raise EndpointError(f"failed to normalize SELECT response: {exc}") from exc
+
         truncated = False
         if len(result.rows) > max_rows:
             result = result.model_copy(
@@ -151,13 +209,20 @@ class HttpSparqlEndpoint:
         return result
 
     def _parse_construct_response(
-        self, body: str, ctype: str, meta: QueryExecutionMetadata
+        self,
+        body: str,
+        ctype: str,
+        meta: QueryExecutionMetadata,
+        *,
+        max_rows: int,
     ) -> ConstructResult:
         """Parse a remote CONSTRUCT response via rdflib.
 
         Maps the response ``content-type`` to an rdflib parser. Raises
         :class:`EndpointError` for unsupported types and never silently
-        returns an empty result.
+        returns an empty result. Triple results are truncated to
+        ``max_rows`` as defense-in-depth and ``metadata.truncated`` is set
+        when truncation actually occurred.
         """
         import rdflib
 
@@ -179,11 +244,17 @@ class HttpSparqlEndpoint:
             raise EndpointError(f"failed to parse CONSTRUCT response: {exc}") from exc
 
         triples: list[Triple] = []
+        truncated = False
         for s, p, o in g:
+            if len(triples) >= max_rows:
+                truncated = True
+                break
             triples.append(Triple(subject=str(s), predicate=str(p), object=str(o)))
         return ConstructResult(
             triples=triples,
-            metadata=meta.model_copy(update={"row_count": len(triples)}),
+            metadata=meta.model_copy(
+                update={"row_count": len(triples), "truncated": truncated},
+            ),
         )
 
     async def aclose(self) -> None:

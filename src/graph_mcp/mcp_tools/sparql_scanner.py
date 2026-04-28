@@ -278,15 +278,40 @@ def reject_unsafe_raw(
     return tokens
 
 
-def find_top_level_limit(tokens: list[Token]) -> int | None:
-    """Find a top-level ``LIMIT <n>`` if present.
+_INTEGER_LIMIT_RE = re.compile(r"^[0-9]+$")
 
-    "Top-level" here means: the LIMIT keyword is at the same brace nesting
-    depth as the leading SELECT/ASK/CONSTRUCT keyword (i.e. depth 0).
-    Returns ``None`` if no top-level LIMIT is found.
+
+@dataclass(frozen=True)
+class LimitScanResult:
+    """Outcome of scanning a token stream for top-level ``LIMIT`` clauses.
+
+    ``found`` is True when at least one top-level ``LIMIT`` was seen. ``count``
+    is the total number of distinct top-level ``LIMIT`` keywords (multiple
+    occurrences are an error).  ``value`` is the integer limit when exactly
+    one valid limit was found.  ``error`` carries a human-readable message
+    explaining why the result is unusable (e.g. negative number, decimal,
+    ``+``-signed, multiple occurrences, missing operand).
+    """
+
+    found: bool
+    value: int | None = None
+    count: int = 0
+    error: str | None = None
+
+
+def find_top_level_limit(tokens: list[Token]) -> LimitScanResult:
+    """Find the top-level ``LIMIT <n>`` and validate its form.
+
+    "Top-level" here means: the ``LIMIT`` keyword sits at the same brace
+    nesting depth as the leading query keyword (depth 0). The operand must
+    be a non-negative decimal integer with no ``+`` sign, no decimal point,
+    and no exponent. Multiple top-level ``LIMIT`` clauses are reported as an
+    error rather than silently picking the last one.
     """
     depth = 0
-    last_top_level_limit: int | None = None
+    count = 0
+    value: int | None = None
+    error: str | None = None
     for idx, tok in enumerate(tokens):
         if tok.kind is TokenKind.PUNCT and tok.value == "{":
             depth += 1
@@ -294,12 +319,44 @@ def find_top_level_limit(tokens: list[Token]) -> int | None:
         if tok.kind is TokenKind.PUNCT and tok.value == "}":
             depth -= 1
             continue
-        if depth == 0 and tok.kind is TokenKind.KEYWORD and tok.value.upper() == "LIMIT":
-            # Next token must be a NUMBER.
-            _, nxt = _next_non_punct(tokens, idx + 1)
-            if nxt is not None and nxt.kind is TokenKind.NUMBER:
-                try:
-                    last_top_level_limit = int(nxt.value)
-                except ValueError:
-                    return None
-    return last_top_level_limit
+        if depth != 0:
+            continue
+        if tok.kind is not TokenKind.KEYWORD or tok.value.upper() != "LIMIT":
+            continue
+        count += 1
+        # The immediate next token (not skipping any PUNCT) must be a NUMBER.
+        # This rejects ``LIMIT + 1`` and ``LIMIT ( 1 )`` rather than silently
+        # accepting them via PUNCT-skipping.
+        nxt = tokens[idx + 1] if idx + 1 < len(tokens) else None
+        if nxt is None:
+            if error is None:
+                error = "LIMIT requires an integer operand"
+            continue
+        if nxt.kind is not TokenKind.NUMBER:
+            if error is None:
+                error = f"LIMIT operand must be a non-negative integer; got token {nxt.value!r}"
+            continue
+        # Reject signs, decimals, exponents — only bare unsigned integers
+        # are permitted as a top-level LIMIT.
+        if not _INTEGER_LIMIT_RE.match(nxt.value):
+            if error is None:
+                error = f"LIMIT operand must be a non-negative integer literal; got {nxt.value!r}"
+            continue
+        try:
+            this_value = int(nxt.value)
+        except ValueError:  # pragma: no cover - regex guarantees parseability
+            if error is None:
+                error = f"LIMIT operand could not be parsed as an integer: {nxt.value!r}"
+            continue
+        if this_value < 0:  # pragma: no cover - regex guarantees non-negative
+            if error is None:
+                error = f"LIMIT must be >= 0; got {this_value}"
+            continue
+        value = this_value
+    if count > 1 and error is None:
+        error = f"multiple top-level LIMIT clauses are not allowed (found {count})"
+        # Discard the value so the caller can't accept the last-one-wins behavior.
+        value = None
+    if error is not None:
+        return LimitScanResult(found=count > 0, value=None, count=count, error=error)
+    return LimitScanResult(found=count == 1, value=value, count=count)
