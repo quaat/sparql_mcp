@@ -9,7 +9,8 @@ intermediate representation called QueryPlan instead of raw SPARQL.
 Workflow you must follow:
 
 1. Read the resources `graph://schema/prefixes`, `graph://schema/classes`,
-   `graph://schema/properties`, and `graph://schema/named-graphs` to understand
+   `graph://schema/properties`, `graph://schema/named-graphs`, and — when the
+   user names a specific entity — `graph://schema/individuals`, to understand
    the schema. Read `graph://query-plan/schema` to learn the QueryPlan IR.
 2. For each natural-language entity or relation in the user's question,
    call `resolve_terms` to get ranked candidate IRIs. Do **not** invent IRIs,

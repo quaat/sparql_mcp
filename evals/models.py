@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -18,7 +18,7 @@ class PlanGenerationOutput(BaseModel):
     question: str
     assumptions: list[str] = Field(default_factory=list)
     resolved_terms: list[TermCandidate] = Field(default_factory=list)
-    plan: Annotated[QueryPlan, Field(discriminator="kind")]  # type: ignore[arg-type]
+    plan: QueryPlan
     confidence: float = Field(ge=0.0, le=1.0)
     needs_clarification: bool = False
     clarification_question: str | None = None
@@ -67,6 +67,16 @@ class CaseResult(BaseModel):
     row_count: int | None = None
     failures: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+
+    # --- Structural metric inputs (set by the runner) -------------------
+    required_features_total: int = 0
+    required_features_present: int = 0
+    forbidden_features_total: int = 0
+    forbidden_features_violated: int = 0
+    expected_terms_total: int = 0
+    expected_terms_present: int = 0
+    repair_attempted: bool = False
+    repair_succeeded: bool = False
 
 
 class EvaluationReport(BaseModel):

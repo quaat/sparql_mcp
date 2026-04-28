@@ -96,12 +96,16 @@ class TermResolver:
         limit: int = 10,
     ) -> TermResolutionResult:
         snap = self.schema.snapshot()
-        kinds = set(expected_kinds) if expected_kinds else {
-            "class",
-            "property",
-            "individual",
-            "graph",
-        }
+        kinds = (
+            set(expected_kinds)
+            if expected_kinds
+            else {
+                "class",
+                "property",
+                "individual",
+                "graph",
+            }
+        )
 
         all_candidates: list[TermCandidate] = []
         for mention in mentions:

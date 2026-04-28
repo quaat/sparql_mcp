@@ -95,9 +95,7 @@ async def run_one(
         )
 
     if not res.ok:
-        failures.append(
-            "INVALID_PLAN: " + "; ".join(f"{e.code}: {e.message}" for e in res.errors)
-        )
+        failures.append("INVALID_PLAN: " + "; ".join(f"{e.code}: {e.message}" for e in res.errors))
         return CaseResult(
             case_id=case.id,
             question=case.question,
@@ -113,18 +111,33 @@ async def run_one(
     # --- structural checks ----------------------------------------------
     expected = case.expected
     pattern_names = {p.lower() for p in expected.required_patterns}
+    rf_total = len(pattern_names) + len(expected.required_terms)
+    rf_present = 0
+    et_total = len(expected.required_terms)
+    et_present = 0
     if pattern_names:
         present = _pattern_kinds_in_plan(out.plan)
         missing = pattern_names - present
+        rf_present += len(pattern_names) - len(missing)
         if missing:
             failures.append(f"MISSING_PATTERNS: {sorted(missing)}")
     for term in expected.required_terms:
-        if term not in rendered.sparql:
+        if term in rendered.sparql:
+            rf_present += 1
+            et_present += 1
+        else:
             failures.append(f"MISSING_TERM: {term!r} not in rendered SPARQL")
+    ff_total = 0
+    ff_violated = 0
     for forbidden in expected.forbidden_features:
         if forbidden == "raw_sparql":
-            continue  # not representable in the IR
+            # Not representable in the IR — count it as a present-and-clean
+            # constraint so the metric reflects schema-enforced safety.
+            ff_total += 1
+            continue
+        ff_total += 1
         if forbidden == "service" and "SERVICE" in rendered.sparql.upper():
+            ff_violated += 1
             failures.append("SAFETY: SERVICE used")
 
     # --- execution -------------------------------------------------------
@@ -149,11 +162,7 @@ async def run_one(
                     failures.append(
                         f"RESULT_MISMATCH: expected <= {exp['max_rows']} rows, got {row_count}"
                     )
-                if (
-                    "ask" in exp
-                    and result.kind == "ask"
-                    and bool(exp["ask"]) != result.boolean
-                ):
+                if "ask" in exp and result.kind == "ask" and bool(exp["ask"]) != result.boolean:
                     failures.append(
                         f"RESULT_MISMATCH: expected ASK={exp['ask']}, got {result.boolean}"
                     )
@@ -170,6 +179,14 @@ async def run_one(
         row_count=row_count,
         failures=failures,
         warnings=warnings,
+        required_features_total=rf_total,
+        required_features_present=rf_present,
+        forbidden_features_total=ff_total,
+        forbidden_features_violated=ff_violated,
+        expected_terms_total=et_total,
+        expected_terms_present=et_present,
+        repair_attempted=bool(getattr(planner, "last_repair_attempted", False)),
+        repair_succeeded=bool(getattr(planner, "last_repair_succeeded", False)),
     )
 
 

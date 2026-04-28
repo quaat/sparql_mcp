@@ -104,9 +104,7 @@ def test_values_arity_check() -> None:
 
 def test_bind_pattern_round_trip() -> None:
     bp = BindPattern(
-        expression=BinaryExpr(
-            op="+", left=LiteralValue(value=1), right=LiteralValue(value=2)
-        ),
+        expression=BinaryExpr(op="+", left=LiteralValue(value=1), right=LiteralValue(value=2)),
         var=Var(name="sum"),
     )
     assert bp.var.name == "sum"

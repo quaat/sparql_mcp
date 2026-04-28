@@ -103,11 +103,9 @@ class SparqlRenderer:
         """
         from graph_mcp.models.literals import PREFIXED_LOCAL_REGEX
 
-        for prefix_iri, name in sorted(
-            self._iri_to_prefix.items(), key=lambda kv: -len(kv[0])
-        ):
+        for prefix_iri, name in sorted(self._iri_to_prefix.items(), key=lambda kv: -len(kv[0])):
             if iri.startswith(prefix_iri):
-                local = iri[len(prefix_iri):]
+                local = iri[len(prefix_iri) :]
                 if PREFIXED_LOCAL_REGEX.match(local):
                     return f"{name}:{local}"
         return None
@@ -117,7 +115,14 @@ class SparqlRenderer:
     def normalize_plan(self, plan: QueryPlan) -> QueryPlan:
         """Apply policy-driven defaults to a plan (e.g. default LIMIT).
 
-        Returns a new plan with adjustments. Does not mutate the input.
+        - The **top-level** ``SELECT`` / ``CONSTRUCT`` gets a default LIMIT
+          injected when none is specified, and any explicit LIMIT is capped at
+          ``policy.max_limit``.
+        - **Subquery** ``SELECT`` plans inside the WHERE clause do NOT have a
+          default LIMIT injected — that would change semantics — but any
+          explicit subquery LIMIT is still capped at ``policy.max_limit``.
+
+        Returns a new plan; does not mutate the input.
         """
         if isinstance(plan, SelectPlan):
             limit = plan.limit
@@ -125,15 +130,57 @@ class SparqlRenderer:
                 limit = self.policy.default_limit
             elif limit > self.policy.max_limit:
                 limit = self.policy.max_limit
-            return plan.model_copy(update={"limit": limit})
+            new_where = self._normalize_subquery_limits(plan.where)
+            return plan.model_copy(update={"limit": limit, "where": new_where})
         if isinstance(plan, ConstructPlan):
             limit = plan.limit
             if limit is None:
                 limit = self.policy.default_limit
             elif limit > self.policy.max_limit:
                 limit = self.policy.max_limit
-            return plan.model_copy(update={"limit": limit})
-        return plan
+            new_where = self._normalize_subquery_limits(plan.where)
+            return plan.model_copy(update={"limit": limit, "where": new_where})
+        if isinstance(plan, AskPlan):
+            return plan.model_copy(update={"where": self._normalize_subquery_limits(plan.where)})
+        return plan  # pragma: no cover
+
+    def _normalize_subquery_limits(self, patterns: list[Pattern]) -> list[Pattern]:
+        """Recursively cap LIMIT in nested SELECT subqueries."""
+        out: list[Pattern] = []
+        for p in patterns:
+            if isinstance(p, SubqueryPattern):
+                inner = p.select
+                limit = inner.limit
+                if limit is not None and limit > self.policy.max_limit:
+                    limit = self.policy.max_limit
+                inner_where = self._normalize_subquery_limits(inner.where)
+                out.append(
+                    p.model_copy(
+                        update={
+                            "select": inner.model_copy(
+                                update={"limit": limit, "where": inner_where}
+                            )
+                        }
+                    )
+                )
+            elif isinstance(
+                p,
+                GroupPattern | OptionalPattern | MinusPattern | GraphPattern | ServicePattern,
+            ):
+                out.append(
+                    p.model_copy(update={"patterns": self._normalize_subquery_limits(p.patterns)})
+                )
+            elif isinstance(p, UnionPattern):
+                out.append(
+                    p.model_copy(
+                        update={
+                            "branches": [self._normalize_subquery_limits(b) for b in p.branches]
+                        }
+                    )
+                )
+            else:
+                out.append(p)
+        return out
 
     def render(self, plan: QueryPlan) -> RenderedQuery:
         plan = self.normalize_plan(plan)
@@ -174,9 +221,7 @@ class SparqlRenderer:
 
     # --- SELECT ------------------------------------------------------
 
-    def _render_select(
-        self, plan: SelectPlan, prefixes: dict[str, str], *, level: int
-    ) -> str:
+    def _render_select(self, plan: SelectPlan, prefixes: dict[str, str], *, level: int) -> str:
         parts: list[str] = []
         if level == 0:
             parts.append(self._render_prefix_block(prefixes))
@@ -230,6 +275,7 @@ class SparqlRenderer:
 
     def _render_projection_item(self, proj: object) -> str:
         from graph_mcp.models.query_plan import Projection
+
         if not isinstance(proj, Projection):  # pragma: no cover - defensive
             raise RenderError(f"invalid projection item: {proj!r}")
         if proj.var is not None:
@@ -238,9 +284,21 @@ class SparqlRenderer:
         return f"({self._render_expr(proj.expression)} AS ?{proj.alias.name})"
 
     def _projected_names(self, plan: SelectPlan) -> list[str]:
-        if not plan.projection:
-            return []
-        return [p.output_name for p in plan.projection]
+        """Return ordered output names for the SELECT.
+
+        For ``SELECT *``, walk the WHERE clause and collect every variable
+        that the SPARQL semantics would project. The order is the variables'
+        first-mention order in the plan tree.
+        """
+        if plan.projection:
+            return [p.output_name for p in plan.projection]
+        seen: list[str] = []
+        seen_set: set[str] = set()
+        for var_name in _iter_visible_variables(plan.where):
+            if var_name not in seen_set:
+                seen_set.add(var_name)
+                seen.append(var_name)
+        return seen
 
     # --- ASK / CONSTRUCT -------------------------------------------
 
@@ -312,8 +370,9 @@ class SparqlRenderer:
             return [ind + f"{kw} {ep} {{", *inner, ind + "}"]
         if isinstance(p, SubqueryPattern):
             sub = self._render_select(p.select, prefixes={}, level=level + 1)
-            sub_indented = "\n".join(_indent(level + 1) + line if line else line
-                                     for line in sub.splitlines())
+            sub_indented = "\n".join(
+                _indent(level + 1) + line if line else line for line in sub.splitlines()
+            )
             return [ind + "{", sub_indented, ind + "}"]
         raise RenderError(f"unknown pattern type: {type(p).__name__}")  # pragma: no cover
 
@@ -433,9 +492,9 @@ class SparqlRenderer:
             args = ", ".join(self._render_expr(a) for a in e.args)
             return f"{e.name.upper()}({args})"
         if isinstance(e, RegexExpr):
-            base = f"REGEX({self._render_expr(e.text)}, \"{escape_string_literal(e.pattern)}\""
+            base = f'REGEX({self._render_expr(e.text)}, "{escape_string_literal(e.pattern)}"'
             if e.flags:
-                base += f", \"{e.flags}\""
+                base += f', "{e.flags}"'
             return base + ")"
         if isinstance(e, BoundExpr):
             return f"BOUND(?{e.var.name})"
@@ -460,3 +519,54 @@ class SparqlRenderer:
             assert e.operand is not None
             return f"{e.accessor.upper()}({self._render_expr(e.operand)})"
         raise RenderError(f"unknown expression: {type(e).__name__}")  # pragma: no cover
+
+
+# --- Helpers for SELECT * variable inference -------------------------------
+
+
+def _iter_visible_variables(patterns: list) -> list[str]:  # type: ignore[type-arg]
+    """Walk a WHERE clause and yield variable names that SPARQL would project.
+
+    The traversal mirrors what ``SELECT *`` exposes:
+    - all variables in triple patterns (subject/predicate/object);
+    - variables introduced by BIND, VALUES, or a subquery's projection;
+    - variables visible inside OPTIONAL / UNION / GRAPH / SERVICE branches;
+    - it does NOT descend into MINUS or FILTER NOT EXISTS / FILTER EXISTS,
+      which do not bind variables outward.
+    """
+    out: list[str] = []
+    for p in patterns:
+        if isinstance(p, TriplePattern):
+            for term in (p.subject, p.predicate, p.object):
+                if isinstance(term, Var):
+                    out.append(term.name)
+        elif isinstance(p, GroupPattern | OptionalPattern):
+            out.extend(_iter_visible_variables(p.patterns))
+        elif isinstance(p, UnionPattern):
+            for branch in p.branches:
+                out.extend(_iter_visible_variables(branch))
+        elif isinstance(p, MinusPattern):
+            # MINUS does not bind anything outward.
+            continue
+        elif isinstance(p, FilterPattern):
+            # FILTER does not bind variables; skip.
+            continue
+        elif isinstance(p, BindPattern):
+            out.append(p.var.name)
+        elif isinstance(p, ValuesPattern):
+            for v in p.variables:
+                out.append(v.name)
+        elif isinstance(p, GraphPattern):
+            if isinstance(p.graph, Var):
+                out.append(p.graph.name)
+            out.extend(_iter_visible_variables(p.patterns))
+        elif isinstance(p, ServicePattern):
+            out.extend(_iter_visible_variables(p.patterns))
+        elif isinstance(p, SubqueryPattern):
+            sub = p.select
+            if sub.projection:
+                for proj in sub.projection:
+                    out.append(proj.output_name)
+            else:
+                out.extend(_iter_visible_variables(sub.where))
+    return out

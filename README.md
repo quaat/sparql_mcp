@@ -20,8 +20,12 @@ IR lets us:
 - **render canonical SPARQL** — stable output that diffs cleanly in PRs;
 - **measure plan quality** — golden cases compare structure, not strings.
 
-The deterministic eval baseline ships in this repo and reaches a
-**100 % case-pass rate** against 20 golden cases out of the box.
+The deterministic eval baseline (a hand-coded keyword planner) ships in this
+repo and exercises the full validator → renderer → executor pipeline against
+20 golden cases. **Note:** that baseline is not an LLM and its case-pass rate
+should not be read as evidence of LLM planning quality. The new structural,
+safety, and repair metrics (see "Evaluations" below) are intended to score
+real LLM planners.
 
 ## Architecture
 
@@ -166,6 +170,7 @@ print(render.render(plan).sparql)
 | `graph://schema/classes` | Known classes |
 | `graph://schema/properties` | Known properties |
 | `graph://schema/named-graphs` | Known named graphs |
+| `graph://schema/individuals` | Known individuals (capped) |
 | `graph://schema/examples` | Example QueryPlan objects |
 | `graph://policy/security` | Active policy |
 | `graph://query-plan/schema` | JSON Schema of the QueryPlan IR |
@@ -176,44 +181,58 @@ print(render.render(plan).sparql)
 
 ## Tests, lint, type-check
 
+The full local verification suite. The CI gate is **all five** of these
+passing on every change:
+
 ```bash
-make test         # pytest (73 tests, fully offline)
-make lint         # ruff
-make typecheck    # mypy --strict (clean)
-make all          # lint + typecheck + tests
+python -c "import graph_mcp.models; print('ok')"   # import smoke
+python -m pytest -q                                 # tests (offline)
+python -m ruff check .                              # lint
+python -m ruff format --check .                     # formatting
+python -m mypy src evals                            # type-check
 ```
+
+The Makefile targets `make test`, `make lint`, `make typecheck`, `make all`
+are convenience wrappers; if you don't have `make`, run the commands above
+directly.
 
 ## Evaluations
 
-The eval harness scores planner output against golden cases.
+The eval harness scores planner output against golden cases. The deterministic
+baseline runs fully offline; an LLM-backed planner is opt-in.
 
 ```bash
-# Deterministic baseline — no API key, runs offline
-make eval
-# Or directly:
+# Deterministic baseline — no API key, runs offline.
+# This baseline is hand-coded; it exists to exercise the validator, renderer,
+# executor, and metrics pipeline end-to-end without LLM cost or flakiness.
+# Its scores are *not* evidence of LLM planning quality.
 python -m evals.runner --planner deterministic
 
-# LLM planner (requires `pip install -e .[ai]` and an API key)
+# LLM planner (requires `pip install -e .[ai]` and an API key).
+# Schema, output JSON Schema, and golden examples are inserted into the
+# system prompt; failed validations are fed back for up to 2 repair attempts.
 python -m evals.runner --planner pydantic-ai --model anthropic:claude-sonnet-4-6
 ```
 
-Output (deterministic baseline):
+The runner emits structural-quality, safety, and repair metrics suitable for
+comparing real LLM planners (and not for declaring victory based on the
+keyword baseline):
 
-```json
-{
-  "valid_plan_rate": 0.9,
-  "render_success_rate": 0.9,
-  "execution_success_rate": 0.9,
-  "case_pass_rate": 1.0,
-  "safety_violation_count": 0.0,
-  "total_cases": 20.0
-}
-```
-
-(`valid_plan_rate < 1.0` is *expected*: case 19 deliberately requests
-clarification, and case 20 deliberately produces a plan the validator must
-reject as unsafe. Both are still counted as case passes by the runner because
-they meet their stated expectations.)
+| Metric | Meaning |
+| --- | --- |
+| `valid_plan_rate` | Fraction of generated plans that pass validation |
+| `render_success_rate` | Fraction that also render to SPARQL |
+| `execution_success_rate` | Fraction that also execute against the sample graph |
+| `required_feature_recall` | Hit rate for required pattern kinds + required tokens in rendered SPARQL |
+| `forbidden_feature_violation_rate` | Fraction of forbidden-feature checks that fired |
+| `term_resolution_accuracy` | Fraction of expected schema terms that appeared |
+| `structural_plan_score` | `required_feature_recall × (1 − forbidden_feature_violation_rate)` |
+| `execution_result_accuracy` | Fraction of executed cases whose row count matched expectations |
+| `safety_violation_count` | Hard-safety failures (e.g. SERVICE used) |
+| `validation_error_rate` | Fraction whose plans the validator rejected |
+| `repair_attempted_rate` | Fraction where the LLM planner needed at least one repair pass |
+| `repair_success_rate` | Of those, fraction that became valid after repair |
+| `case_pass_rate` | Cases that hit zero structural / safety / execution failures |
 
 The runner can also produce a JSON+markdown report:
 
@@ -252,24 +271,71 @@ features, and execution expectations.
 ### Enable raw SPARQL safely
 Set `GRAPH_MCP_ENABLE_RAW_SPARQL=true`. The tool still:
 
-- rejects `INSERT`/`DELETE`/`DROP`/`CLEAR`/`LOAD`/`CREATE`/`COPY`/`MOVE`/`ADD`;
-- rejects `SERVICE` unless explicitly allowlisted;
+- strips comments and string literals before keyword matching, so `# DROP`
+  in a comment or `"INSERT"` in a string literal does not false-positive;
+- rejects `INSERT`/`DELETE`/`DROP`/`CLEAR`/`LOAD`/`CREATE`/`COPY`/`MOVE`/`ADD`
+  via word-boundary matching (catches `INSERT\nDATA`);
+- rejects `DESCRIBE`;
+- rejects `SERVICE` unless its endpoint IRI exactly matches the allowlist;
+  also rejects `SERVICE ?var` and `SERVICE prefix:name`;
+- infers the actual query form from the cleaned text and rejects requests
+  whose `expected_query_type` does not match;
 - enforces the configured timeout and row cap.
 
 ## Security model
 
 - Read-only by default (no SPARQL Update, no arbitrary `SERVICE`).
-- Validator enforces depth, triple-count, property-path complexity, and limit caps.
-- Named-graph and SERVICE allowlists.
-- All log output goes to stderr (stdio transport keeps stdout clean for JSON-RPC).
+- Validator enforces depth, triple-count, property-path complexity, and
+  limit caps **at every level** (top-level *and* subqueries).
+- Named-graph allowlist: when configured, `GRAPH ?g` is rejected unless
+  `?g` is constrained by a sibling `VALUES` to allowlisted IRIs.
+- SERVICE allowlist applies in both the IR validator and the raw-SPARQL
+  pre-flight check.
+- All log output goes to stderr (stdio transport keeps stdout clean for
+  JSON-RPC).
 - Errors and exceptions never include endpoint credentials.
 - Raw-SPARQL tool is disabled by default and clearly tagged when enabled.
+- EXISTS / NOT EXISTS sub-patterns are recursively validated for SERVICE,
+  unknown prefixes, depth, triple-count, and property-path policy; their
+  inner variables do not leak outward.
+- Aggregate queries: variables outside aggregate expressions in projections,
+  HAVING, and ORDER BY must appear in GROUP BY.
+- Prefixes are declared once at the top of the plan; subquery prefix blocks
+  are rejected.
 
-## Limitations
+## Known limitations
 
-- `DESCRIBE` is not in the IR (deliberately).
-- The remote `HttpSparqlEndpoint` only normalizes JSON `SELECT`/`ASK` results;
-  remote `CONSTRUCT` returns an empty triple list (use the local executor for
-  CONSTRUCT round-trips).
-- The deterministic planner is keyword-based; it exists to validate the
-  pipeline, not to compete with an LLM.
+The following are explicit, current limitations — if any of these is a
+blocker for you, please open an issue.
+
+- **Deterministic planner is keyword-matching.** The default planner in
+  `evals/agent.py` is hand-coded against the question strings of the bundled
+  golden cases. Its 100% case-pass rate is not evidence of LLM planning
+  quality.
+- **PydanticAI planner is opt-in.** Requires `pip install -e .[ai]` and an
+  API key. The planner injects schema, IR JSON Schema, and golden examples
+  into the system prompt and runs up to two validator-feedback repair
+  attempts; we do not bundle prompt-tuning runs.
+- **Raw SPARQL.** Disabled by default. When enabled, the pre-flight check
+  is comment-and-string aware and verifies the actual query form, but it is
+  not a full SPARQL parser. Treat raw mode as an expert escape hatch and
+  allowlist sparingly.
+- **Remote `CONSTRUCT`.** The HTTP endpoint asks for `text/turtle` /
+  `application/n-triples` / `application/rdf+xml` and parses the response
+  via rdflib. Endpoints that ignore the `Accept` header and return JSON or
+  HTML will produce an `EndpointError("unsupported CONSTRUCT response
+  content-type")` — never a silent empty result.
+- **Schema discovery.** Two providers are shipped: the static
+  `StaticSchemaProvider` and the endpoint-backed `SparqlSchemaProvider`,
+  which discovers classes, properties, individuals, and named graphs via
+  a small set of `SELECT` queries and caches the result for
+  `cache_ttl_seconds`. Discovery is best-effort: failures (timeouts,
+  unsupported endpoints) yield empty sections rather than errors.
+- **Local timeout.** `LocalRdflibEndpoint` runs queries in a worker thread
+  and abandons results on timeout, but rdflib has no first-class
+  cancellation, so a runaway query continues to consume CPU until it
+  finishes. For hard cancellation, query a real SPARQL server via
+  `HttpSparqlEndpoint` against an engine that enforces query budgets.
+- **`DESCRIBE`** is intentionally not in the IR.
+- **SPARQL Update** is intentionally not in the IR and is rejected by the
+  raw-SPARQL pre-flight when raw mode is enabled.

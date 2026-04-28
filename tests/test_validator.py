@@ -54,13 +54,9 @@ def test_unbound_projection_var(validator: QueryPlanValidator) -> None:
 
 def test_filter_var_unbound(validator: QueryPlanValidator) -> None:
     plan = _select(
-        TriplePattern(
-            subject=Var(name="p"), predicate=_ex("knows"), object=Var(name="q")
-        ),
+        TriplePattern(subject=Var(name="p"), predicate=_ex("knows"), object=Var(name="q")),
         FilterPattern(
-            expression=BinaryExpr(
-                op="=", left=Var(name="z"), right=LiteralValue(value=1)
-            )
+            expression=BinaryExpr(op="=", left=Var(name="z"), right=LiteralValue(value=1))
         ),
         projection=[Projection(var=Var(name="p"))],
     )
@@ -71,9 +67,7 @@ def test_filter_var_unbound(validator: QueryPlanValidator) -> None:
 
 def test_bind_rebind(validator: QueryPlanValidator) -> None:
     plan = _select(
-        TriplePattern(
-            subject=Var(name="p"), predicate=_ex("age"), object=Var(name="age")
-        ),
+        TriplePattern(subject=Var(name="p"), predicate=_ex("age"), object=Var(name="age")),
         BindPattern(
             expression=LiteralValue(value=1),
             var=Var(name="age"),
@@ -96,9 +90,7 @@ def test_having_non_grouped(validator: QueryPlanValidator) -> None:
             ),
         ],
         group_by=[Var(name="company")],
-        having=[
-            BinaryExpr(op=">", left=Var(name="p"), right=LiteralValue(value=1))
-        ],
+        having=[BinaryExpr(op=">", left=Var(name="p"), right=LiteralValue(value=1))],
         where=[
             TriplePattern(
                 subject=Var(name="p"), predicate=_ex("worksFor"), object=Var(name="company")
@@ -148,11 +140,7 @@ def test_non_grouped_projection(validator: QueryPlanValidator) -> None:
                 alias=Var(name="n"),
             ),
         ],
-        where=[
-            TriplePattern(
-                subject=Var(name="p"), predicate=_ex("knows"), object=Var(name="q")
-            )
-        ],
+        where=[TriplePattern(subject=Var(name="p"), predicate=_ex("knows"), object=Var(name="q"))],
     )
     res = validator.validate(plan)
     codes = {i.code for i in res.errors}
@@ -161,9 +149,7 @@ def test_non_grouped_projection(validator: QueryPlanValidator) -> None:
 
 def test_filter_after_optional_warning(validator: QueryPlanValidator) -> None:
     plan = _select(
-        TriplePattern(
-            subject=Var(name="p"), predicate=_ex("knows"), object=Var(name="q")
-        ),
+        TriplePattern(subject=Var(name="p"), predicate=_ex("knows"), object=Var(name="q")),
         OptionalPattern(
             patterns=[
                 TriplePattern(
@@ -174,9 +160,7 @@ def test_filter_after_optional_warning(validator: QueryPlanValidator) -> None:
             ]
         ),
         FilterPattern(
-            expression=BinaryExpr(
-                op=">", left=Var(name="age"), right=LiteralValue(value=18)
-            )
+            expression=BinaryExpr(op=">", left=Var(name="age"), right=LiteralValue(value=18))
         ),
         projection=[Projection(var=Var(name="p"))],
     )
@@ -308,9 +292,7 @@ def test_subquery_projects_outward(validator: QueryPlanValidator) -> None:
     plan = _select(
         SubqueryPattern(select=sub),
         FilterPattern(
-            expression=BinaryExpr(
-                op="!=", left=Var(name="company"), right=LiteralValue(value="x")
-            )
+            expression=BinaryExpr(op="!=", left=Var(name="company"), right=LiteralValue(value="x"))
         ),
         projection=[Projection(var=Var(name="company"))],
     )
@@ -321,9 +303,7 @@ def test_subquery_projects_outward(validator: QueryPlanValidator) -> None:
 def test_not_exists_inner_var_does_not_leak(validator: QueryPlanValidator) -> None:
     """Variables introduced inside NOT EXISTS must not be flagged as unbound."""
     plan = _select(
-        TriplePattern(
-            subject=Var(name="p"), predicate=_ex("knows"), object=Var(name="q")
-        ),
+        TriplePattern(subject=Var(name="p"), predicate=_ex("knows"), object=Var(name="q")),
         FilterPattern(
             expression=NotExistsExpr(
                 patterns=[
@@ -343,9 +323,7 @@ def test_not_exists_inner_var_does_not_leak(validator: QueryPlanValidator) -> No
 
 def test_limit_cap(validator: QueryPlanValidator) -> None:
     plan = _select(
-        TriplePattern(
-            subject=Var(name="p"), predicate=_ex("knows"), object=Var(name="q")
-        ),
+        TriplePattern(subject=Var(name="p"), predicate=_ex("knows"), object=Var(name="q")),
         projection=[Projection(var=Var(name="p"))],
         limit=10**9,
     )
@@ -356,9 +334,7 @@ def test_limit_cap(validator: QueryPlanValidator) -> None:
 
 def test_aggregate_outside_projection_or_having(validator: QueryPlanValidator) -> None:
     plan = _select(
-        TriplePattern(
-            subject=Var(name="p"), predicate=_ex("knows"), object=Var(name="q")
-        ),
+        TriplePattern(subject=Var(name="p"), predicate=_ex("knows"), object=Var(name="q")),
         FilterPattern(
             expression=BinaryExpr(
                 op=">",
@@ -379,9 +355,7 @@ def test_values_binds_variables(validator: QueryPlanValidator) -> None:
             variables=[Var(name="p")],
             rows=[[_ex("alice")], [_ex("bob")]],
         ),
-        TriplePattern(
-            subject=Var(name="p"), predicate=_ex("worksFor"), object=Var(name="c")
-        ),
+        TriplePattern(subject=Var(name="p"), predicate=_ex("worksFor"), object=Var(name="c")),
         projection=[Projection(var=Var(name="c"))],
     )
     res = validator.validate(plan)

@@ -47,11 +47,9 @@ class GraphEndpoint(Protocol):
         query_type: str,
         timeout_ms: int,
         max_rows: int,
-    ) -> QueryResult:
-        ...
+    ) -> QueryResult: ...
 
-    async def aclose(self) -> None:
-        ...
+    async def aclose(self) -> None: ...
 
 
 # --- HTTP endpoint --------------------------------------------------------
@@ -70,12 +68,18 @@ class HttpSparqlEndpoint:
         self.url = url
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient()
-        self._headers = {
-            "Accept": "application/sparql-results+json, application/rdf+xml;q=0.5",
+        self._select_headers = {
+            "Accept": "application/sparql-results+json",
+            "User-Agent": "graph-mcp/0.1",
+        }
+        self._construct_headers = {
+            # text/turtle is widely supported; application/n-triples as fallback.
+            "Accept": ("text/turtle, application/n-triples;q=0.9, application/rdf+xml;q=0.5"),
             "User-Agent": "graph-mcp/0.1",
         }
         if default_headers:
-            self._headers.update(default_headers)
+            self._select_headers.update(default_headers)
+            self._construct_headers.update(default_headers)
 
     async def query(
         self,
@@ -86,12 +90,13 @@ class HttpSparqlEndpoint:
         max_rows: int,
     ) -> QueryResult:
         timeout = httpx.Timeout(timeout_ms / 1000.0)
+        headers = self._construct_headers if query_type == "construct" else self._select_headers
         started = time.perf_counter()
         try:
             resp = await self._client.post(
                 self.url,
                 data={"query": sparql},
-                headers=self._headers,
+                headers=headers,
                 timeout=timeout,
             )
         except httpx.TimeoutException as exc:
@@ -118,9 +123,7 @@ class HttpSparqlEndpoint:
             return AskResult(boolean=bool(data.get("boolean", False)), metadata=meta)
 
         if query_type == "construct":
-            # Many endpoints return turtle/n-triples; we keep this minimal —
-            # the LocalRdflibEndpoint handles CONSTRUCT in a typed way.
-            return ConstructResult(triples=[], metadata=meta)
+            return self._parse_construct_response(resp.text, ctype, meta)
 
         if "json" not in ctype:
             raise EndpointError(f"unexpected content-type: {ctype}")
@@ -147,6 +150,42 @@ class HttpSparqlEndpoint:
             )
         return result
 
+    def _parse_construct_response(
+        self, body: str, ctype: str, meta: QueryExecutionMetadata
+    ) -> ConstructResult:
+        """Parse a remote CONSTRUCT response via rdflib.
+
+        Maps the response ``content-type`` to an rdflib parser. Raises
+        :class:`EndpointError` for unsupported types and never silently
+        returns an empty result.
+        """
+        import rdflib
+
+        # Map content-type to rdflib parser format.
+        if "turtle" in ctype:
+            fmt = "turtle"
+        elif "n-triples" in ctype or "ntriples" in ctype:
+            fmt = "nt"
+        elif "rdf+xml" in ctype:
+            fmt = "xml"
+        elif "n3" in ctype:
+            fmt = "n3"
+        else:
+            raise EndpointError(f"unsupported CONSTRUCT response content-type: {ctype!r}")
+
+        try:
+            g = rdflib.Graph().parse(data=body, format=fmt)
+        except Exception as exc:  # pragma: no cover - rdflib parser failures
+            raise EndpointError(f"failed to parse CONSTRUCT response: {exc}") from exc
+
+        triples: list[Triple] = []
+        for s, p, o in g:
+            triples.append(Triple(subject=str(s), predicate=str(p), object=str(o)))
+        return ConstructResult(
+            triples=triples,
+            metadata=meta.model_copy(update={"row_count": len(triples)}),
+        )
+
     async def aclose(self) -> None:
         if self._owns_client:
             await self._client.aclose()
@@ -156,7 +195,16 @@ class HttpSparqlEndpoint:
 
 
 class LocalRdflibEndpoint:
-    """In-memory rdflib endpoint. Useful for tests and offline use."""
+    """In-memory rdflib endpoint.
+
+    Best suited for tests, offline development, and small datasets. Timeout
+    behavior is implemented by running the query in a worker thread and
+    abandoning the result on timeout — rdflib has no first-class
+    cancellation, so a runaway query will continue to consume CPU on its
+    worker thread until it completes. Callers that need hard cancellation
+    should run their workload via the HTTP endpoint against a server that
+    enforces query budgets at the engine level.
+    """
 
     def __init__(self, graph: Any | None = None) -> None:
         # Imported lazily so that environments without rdflib can still import
@@ -194,11 +242,17 @@ class LocalRdflibEndpoint:
         timeout_ms: int,
         max_rows: int,
     ) -> QueryResult:
-        # rdflib is synchronous; we run it in-thread and treat timeout as
-        # advisory — the validator already bounded the work.
+        import asyncio
+
+        loop = asyncio.get_running_loop()
         started = time.perf_counter()
         try:
-            res = self._graph.query(sparql)
+            res = await asyncio.wait_for(
+                loop.run_in_executor(None, self._graph.query, sparql),
+                timeout=timeout_ms / 1000.0,
+            )
+        except TimeoutError as exc:
+            raise EndpointError(f"local rdflib query timed out after {timeout_ms}ms") from exc
         except Exception as exc:  # pragma: no cover - rdflib parser errors
             raise EndpointError(f"rdflib query failed: {exc}") from exc
         duration_ms = (time.perf_counter() - started) * 1000.0
@@ -212,9 +266,7 @@ class LocalRdflibEndpoint:
             res_any: Any = res
             for triple in res_any:
                 s, p, o = triple
-                triples.append(
-                    Triple(subject=str(s), predicate=str(p), object=str(o))
-                )
+                triples.append(Triple(subject=str(s), predicate=str(p), object=str(o)))
             return ConstructResult(triples=triples, metadata=meta)
 
         return self._normalize_select(res, meta, max_rows=max_rows)
@@ -222,11 +274,23 @@ class LocalRdflibEndpoint:
     def _normalize_select(
         self, res: Any, meta: QueryExecutionMetadata, *, max_rows: int
     ) -> SelectResult:
+        """Normalize an rdflib result into a typed SelectResult.
+
+        Truncation logic: we read up to ``max_rows + 1`` rows from rdflib's
+        result iterator. If we got the extra row, the result is truncated;
+        otherwise the iterator was already exhausted.
+        """
         from graph_mcp.models import BindingValue, SolutionRow
 
         variables = [str(v) for v in (res.vars or [])]
         rows: list[SolutionRow] = []
+        truncated = False
         for row in res:
+            if len(rows) >= max_rows:
+                # We have already read max_rows; this extra row proves the
+                # iterator had more, so set truncated and stop.
+                truncated = True
+                break
             bindings: dict[str, BindingValue] = {}
             for var in variables:
                 val = row[self._rdflib.Variable(var)]
@@ -244,16 +308,11 @@ class LocalRdflibEndpoint:
                         lang=str(val.language) if val.language else None,
                     )
             rows.append(SolutionRow(bindings=bindings))
-            if len(rows) >= max_rows:
-                break
 
-        truncated = len(rows) >= max_rows
         return SelectResult(
             variables=variables,
             rows=rows,
-            metadata=meta.model_copy(
-                update={"row_count": len(rows), "truncated": truncated}
-            ),
+            metadata=meta.model_copy(update={"row_count": len(rows), "truncated": truncated}),
         )
 
     async def aclose(self) -> None:

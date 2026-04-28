@@ -99,9 +99,7 @@ def test_resolve_terms_tool() -> None:
         )
     )
     resolver = TermResolver(schema)
-    res = tool_resolve_terms(
-        ResolveTermsInput(mentions=["Person", "works for"], limit=3), resolver
-    )
+    res = tool_resolve_terms(ResolveTermsInput(mentions=["Person", "works for"], limit=3), resolver)
     iris = {c.iri for c in res.candidates}
     assert "http://example.org/Person" in iris
     assert "http://example.org/worksFor" in iris
@@ -146,9 +144,7 @@ async def test_query_graph_tool_executes(
 
 
 def test_explain_tool(validator: QueryPlanValidator) -> None:
-    out = tool_explain_query_plan(
-        ExplainQueryPlanInput(plan=_basic_plan()), validator
-    )
+    out = tool_explain_query_plan(ExplainQueryPlanInput(plan=_basic_plan()), validator)
     assert out.query_form == "select"
     assert "p" in out.projected_variables
 

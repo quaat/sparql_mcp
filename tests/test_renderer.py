@@ -60,9 +60,7 @@ def test_optional_block(renderer: SparqlRenderer) -> None:
         prefixes=[EX],
         projection=[Projection(var=Var(name="p"))],
         where=[
-            TriplePattern(
-                subject=Var(name="p"), predicate=_ex("a"), object=_ex("Person")
-            ),
+            TriplePattern(subject=Var(name="p"), predicate=_ex("a"), object=_ex("Person")),
             OptionalPattern(
                 patterns=[
                     TriplePattern(
@@ -112,9 +110,7 @@ def test_filter_not_exists(renderer: SparqlRenderer) -> None:
         prefixes=[EX],
         projection=[Projection(var=Var(name="p"))],
         where=[
-            TriplePattern(
-                subject=Var(name="p"), predicate=_ex("a"), object=_ex("Person")
-            ),
+            TriplePattern(subject=Var(name="p"), predicate=_ex("a"), object=_ex("Person")),
             FilterPattern(
                 expression=NotExistsExpr(
                     patterns=[
@@ -140,9 +136,7 @@ def test_property_path(permissive_policy) -> None:  # type: ignore[no-untyped-de
         where=[
             TriplePattern(
                 subject=_ex("alice"),
-                predicate=PropertyPathOneOrMore(
-                    operand=PropertyPathTerm(iri=_ex("knows"))
-                ),
+                predicate=PropertyPathOneOrMore(operand=PropertyPathTerm(iri=_ex("knows"))),
                 object=Var(name="b"),
             )
         ],
@@ -186,11 +180,7 @@ def test_aggregation_with_having(renderer: SparqlRenderer) -> None:
 def test_subquery(renderer: SparqlRenderer) -> None:
     sub = SelectPlan(
         projection=[Projection(var=Var(name="x"))],
-        where=[
-            TriplePattern(
-                subject=Var(name="x"), predicate=_ex("a"), object=_ex("Person")
-            )
-        ],
+        where=[TriplePattern(subject=Var(name="x"), predicate=_ex("a"), object=_ex("Person"))],
     )
     plan = SelectPlan(
         prefixes=[EX],
@@ -233,9 +223,7 @@ def test_values(renderer: SparqlRenderer) -> None:
                 variables=[Var(name="p")],
                 rows=[[_ex("alice")], [_ex("bob")]],
             ),
-            TriplePattern(
-                subject=Var(name="p"), predicate=_ex("worksFor"), object=Var(name="c")
-            ),
+            TriplePattern(subject=Var(name="p"), predicate=_ex("worksFor"), object=Var(name="c")),
         ],
     )
     out = renderer.render(plan)
@@ -248,13 +236,9 @@ def test_bind(renderer: SparqlRenderer) -> None:
         prefixes=[EX],
         projection=[Projection(var=Var(name="p")), Projection(var=Var(name="d"))],
         where=[
-            TriplePattern(
-                subject=Var(name="p"), predicate=_ex("age"), object=Var(name="a")
-            ),
+            TriplePattern(subject=Var(name="p"), predicate=_ex("age"), object=Var(name="a")),
             BindPattern(
-                expression=BinaryExpr(
-                    op="*", left=Var(name="a"), right=LiteralValue(value=2)
-                ),
+                expression=BinaryExpr(op="*", left=Var(name="a"), right=LiteralValue(value=2)),
                 var=Var(name="d"),
             ),
         ],
@@ -269,9 +253,7 @@ def test_minus(renderer: SparqlRenderer) -> None:
         prefixes=[EX],
         projection=[Projection(var=Var(name="p"))],
         where=[
-            TriplePattern(
-                subject=Var(name="p"), predicate=_ex("a"), object=_ex("Person")
-            ),
+            TriplePattern(subject=Var(name="p"), predicate=_ex("a"), object=_ex("Person")),
             MinusPattern(
                 patterns=[
                     TriplePattern(
@@ -351,15 +333,9 @@ def test_construct_render(renderer: SparqlRenderer) -> None:
     plan = ConstructPlan(
         prefixes=[EX],
         template=[
-            TriplePattern(
-                subject=Var(name="p"), predicate=_ex("name"), object=Var(name="n")
-            )
+            TriplePattern(subject=Var(name="p"), predicate=_ex("name"), object=Var(name="n"))
         ],
-        where=[
-            TriplePattern(
-                subject=Var(name="p"), predicate=_ex("name"), object=Var(name="n")
-            )
-        ],
+        where=[TriplePattern(subject=Var(name="p"), predicate=_ex("name"), object=Var(name="n"))],
     )
     out = renderer.render(plan)
     assert out.query_type == "construct"

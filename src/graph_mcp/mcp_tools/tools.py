@@ -7,6 +7,7 @@ decorators with their dependencies (validator, renderer, endpoint, schema).
 
 from __future__ import annotations
 
+import re as _re
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -100,9 +101,7 @@ class RawSparqlOutput(BaseModel):
 # --- Pure tool functions ----------------------------------------------------
 
 
-def tool_resolve_terms(
-    inp: ResolveTermsInput, resolver: TermResolver
-) -> TermResolutionResult:
+def tool_resolve_terms(inp: ResolveTermsInput, resolver: TermResolver) -> TermResolutionResult:
     # The MCP tool input narrows to four kinds; the resolver's type allows a
     # fifth ("unknown") that we never request here.
     kinds = list(inp.expected_kinds) if inp.expected_kinds else None
@@ -194,11 +193,17 @@ async def tool_execute_sparql_raw(
         raise PermissionError("raw SPARQL execution is disabled by policy")
     sparql = inp.sparql
     _reject_unsafe_raw(sparql, policy)
+    inferred = _infer_query_type(sparql)
+    if inferred != inp.expected_query_type:
+        raise PermissionError(
+            f"expected_query_type={inp.expected_query_type!r} does not match "
+            f"the actual query form ({inferred!r})"
+        )
     timeout_ms = inp.timeout_ms or policy.timeout_ms
     max_rows = min(inp.max_rows or policy.default_limit, policy.max_limit)
     result = await endpoint.query(
         sparql,
-        query_type=inp.expected_query_type,
+        query_type=inferred,
         timeout_ms=timeout_ms,
         max_rows=max_rows,
     )
@@ -256,22 +261,130 @@ def _build_explanation(
     return "\n".join(lines)
 
 
-def _reject_unsafe_raw(sparql: str, policy: SecurityPolicy) -> None:
-    """Conservative pre-flight checks for raw SPARQL.
+_UPDATE_KEYWORDS: tuple[str, ...] = (
+    "INSERT",
+    "DELETE",
+    "DROP",
+    "CLEAR",
+    "LOAD",
+    "CREATE",
+    "COPY",
+    "MOVE",
+    "ADD",
+)
+_FORBIDDEN_QUERY_FORMS: tuple[str, ...] = ("DESCRIBE",)
+_QUERY_FORM_KEYWORDS: tuple[str, ...] = ("SELECT", "ASK", "CONSTRUCT", "DESCRIBE")
 
-    The remote endpoint is the ultimate arbiter; we reject obviously unsafe
-    forms here so they never even reach the wire.
+
+def _strip_sparql_comments_and_strings(sparql: str) -> str:
+    """Return SPARQL with string literals and comments replaced by spaces.
+
+    This is the prerequisite for any keyword-based safety check: substring
+    matches on the raw text would false-positive on ``"INSERT in a string"``
+    and false-negative on ``INSERT\\nDATA`` once whitespace is normalized.
+
+    The transformation preserves character positions (replaces with spaces)
+    so error messages can still point at the offending byte if we want.
     """
-    upper = sparql.upper()
-    forbidden = (
-        "INSERT ", "DELETE ", "DROP ", "CLEAR ", "LOAD ",
-        "CREATE ", "COPY ", "MOVE ", "ADD ",
-    )
-    for kw in forbidden:
-        if kw in upper:
-            raise PermissionError(f"forbidden SPARQL keyword in raw query: {kw.strip()}")
-    if "SERVICE" in upper and not policy.allowed_service_endpoints:
-        raise PermissionError("SERVICE not allowed by policy")
+    out: list[str] = []
+    i = 0
+    n = len(sparql)
+    while i < n:
+        c = sparql[i]
+        # Line comment: # to end-of-line.
+        if c == "#":
+            while i < n and sparql[i] != "\n":
+                out.append(" ")
+                i += 1
+            continue
+        # Triple-quoted strings (rare in queries but legal).
+        if sparql.startswith('"""', i) or sparql.startswith("'''", i):
+            quote = sparql[i : i + 3]
+            out.append("   ")
+            i += 3
+            while i < n and not sparql.startswith(quote, i):
+                out.append(" " if sparql[i] != "\n" else "\n")
+                i += 1
+            if i < n:
+                out.append("   ")
+                i += 3
+            continue
+        # Single-line strings.
+        if c in ('"', "'"):
+            quote = c
+            out.append(" ")
+            i += 1
+            while i < n and sparql[i] != quote:
+                if sparql[i] == "\\" and i + 1 < n:
+                    out.append("  ")
+                    i += 2
+                    continue
+                out.append(" " if sparql[i] != "\n" else "\n")
+                i += 1
+            if i < n:
+                out.append(" ")
+                i += 1
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def _infer_query_type(sparql: str) -> Literal["select", "ask", "construct"]:
+    """Determine the query form from the cleaned SPARQL text.
+
+    The first matching query keyword wins. ``DESCRIBE`` is forbidden — callers
+    invoke ``_reject_unsafe_raw`` before this for the safety verdict.
+    """
+    cleaned = _strip_sparql_comments_and_strings(sparql).upper()
+    positions: dict[str, int] = {}
+    for kw in _QUERY_FORM_KEYWORDS:
+        match = _re.search(rf"\b{kw}\b", cleaned)
+        if match:
+            positions[kw] = match.start()
+    if not positions:
+        raise PermissionError("could not determine SPARQL query form")
+    first = min(positions, key=lambda k: positions[k])
+    if first == "DESCRIBE":
+        raise PermissionError("DESCRIBE is not supported in raw mode")
+    return first.lower()  # type: ignore[return-value]
+
+
+def _reject_unsafe_raw(sparql: str, policy: SecurityPolicy) -> None:
+    """Pre-flight safety check for raw SPARQL.
+
+    Strips comments and string literals, then word-boundary-matches the
+    forbidden update keywords. Verifies that any ``SERVICE`` references an
+    allowlisted endpoint.
+    """
+    cleaned = _strip_sparql_comments_and_strings(sparql)
+    upper = cleaned.upper()
+
+    for kw in _UPDATE_KEYWORDS:
+        if _re.search(rf"\b{kw}\b", upper):
+            raise PermissionError(f"forbidden SPARQL keyword in raw query: {kw}")
+    for kw in _FORBIDDEN_QUERY_FORMS:
+        if _re.search(rf"\b{kw}\b", upper):
+            raise PermissionError(f"unsupported query form: {kw}")
+
+    # Each SERVICE must point to an explicitly allowlisted endpoint.
+    for match in _re.finditer(r"\bSERVICE\s+(?:SILENT\s+)?<([^>\s]+)>", upper, _re.IGNORECASE):
+        # Use the original-cased text from the cleaned buffer for matching.
+        original = cleaned[match.start(1) : match.end(1)]
+        if not policy.is_service_allowed(original):
+            raise PermissionError(f"SERVICE endpoint not in allowlist: {original}")
+
+    # SERVICE with a variable endpoint is impossible to allowlist; reject it.
+    if _re.search(r"\bSERVICE\s+(?:SILENT\s+)?\?", upper, _re.IGNORECASE):
+        raise PermissionError("SERVICE with a variable endpoint is not permitted")
+
+    # Bare SERVICE with prefixed-name (e.g. SERVICE ex:foo) — also reject; the
+    # raw path does not resolve prefixes itself.
+    if _re.search(r"\bSERVICE\s+(?:SILENT\s+)?[A-Za-z_][A-Za-z0-9_\-]*:", upper, _re.IGNORECASE):
+        raise PermissionError(
+            "SERVICE with a prefixed-name endpoint is not permitted in raw mode; "
+            "use an absolute IRI"
+        )
 
 
 # --- Registration -----------------------------------------------------------

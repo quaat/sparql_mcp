@@ -7,9 +7,15 @@ it does not call any LLM. The PydanticAI planner is opt-in and requires the
 
 from __future__ import annotations
 
+import json
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from pydantic import TypeAdapter
+
 from evals.models import PlanGenerationOutput
+from graph_mcp.compiler import QueryPlanValidator
+from graph_mcp.graph.schema_discovery import SchemaProvider, SchemaSnapshot
 from graph_mcp.graph.term_resolver import TermCandidate, TermResolver
 from graph_mcp.models import (
     AggregateExpr,
@@ -45,22 +51,26 @@ XSD = Prefix(prefix="xsd", iri="http://www.w3.org/2001/XMLSchema#")
 def _ex(local: str):  # type: ignore[no-untyped-def]
     """Prefer prefixed names so the renderer emits readable, eval-friendly SPARQL."""
     from graph_mcp.models import PrefixedName
+
     return PrefixedName(prefix="ex", local=local)
 
 
 def _rdfs(local: str):  # type: ignore[no-untyped-def]
     from graph_mcp.models import PrefixedName
+
     return PrefixedName(prefix="rdfs", local=local)
 
 
 def _rdf(local: str):  # type: ignore[no-untyped-def]
     from graph_mcp.models import PrefixedName
+
     return PrefixedName(prefix="rdf", local=local)
 
 
 class Planner(Protocol):
-    def plan(self, question: str, *, resolver: TermResolver | None = None) -> PlanGenerationOutput:
-        ...
+    def plan(
+        self, question: str, *, resolver: TermResolver | None = None
+    ) -> PlanGenerationOutput: ...
 
 
 def _ex_iri(local: str):  # type: ignore[no-untyped-def]
@@ -84,9 +94,7 @@ class DeterministicPlanner:
     end-to-end without any API key.
     """
 
-    def plan(
-        self, question: str, *, resolver: TermResolver | None = None
-    ) -> PlanGenerationOutput:
+    def plan(self, question: str, *, resolver: TermResolver | None = None) -> PlanGenerationOutput:
         q = question.lower()
         if "work" in q and "acme" in q:
             return self._who_works_for_acme(question)
@@ -339,9 +347,7 @@ class DeterministicPlanner:
         return PlanGenerationOutput(question=q, plan=plan, confidence=0.85)
 
     def _knows_one_or_more(self, q: str) -> PlanGenerationOutput:
-        path: PropertyPath = PropertyPathOneOrMore(
-            operand=PropertyPathTerm(iri=_ex_iri("knows"))
-        )
+        path: PropertyPath = PropertyPathOneOrMore(operand=PropertyPathTerm(iri=_ex_iri("knows")))
         plan = SelectPlan(
             prefixes=[EX],
             projection=[Projection(var=Var(name="b"))],
@@ -523,9 +529,7 @@ class DeterministicPlanner:
                 ),
                 SubqueryPattern(select=sub),
                 FilterPattern(
-                    expression=BinaryExpr(
-                        op="=", left=Var(name="age"), right=Var(name="maxAge")
-                    )
+                    expression=BinaryExpr(op="=", left=Var(name="age"), right=Var(name="maxAge"))
                 ),
             ],
         )
@@ -541,9 +545,7 @@ class DeterministicPlanner:
                     patterns=[
                         TriplePattern(
                             subject=Var(name="s"),
-                            predicate=Iri(
-                                value="http://www.w3.org/1999/02/22-rdf-syntax-ns#type"
-                            ),
+                            predicate=Iri(value="http://www.w3.org/1999/02/22-rdf-syntax-ns#type"),
                             object=_ex_iri("Person"),
                         )
                     ],
@@ -598,13 +600,16 @@ class DeterministicPlanner:
         return PlanGenerationOutput(question=q, plan=plan, confidence=0.9)
 
     def _ambiguous_clarification(self, q: str) -> PlanGenerationOutput:
-        plan = AskPlan(prefixes=[EX], where=[
-            TriplePattern(
-                subject=Var(name="x"),
-                predicate=_rdf("type"),
-                object=_ex_iri("Person"),
-            )
-        ])
+        plan = AskPlan(
+            prefixes=[EX],
+            where=[
+                TriplePattern(
+                    subject=Var(name="x"),
+                    predicate=_rdf("type"),
+                    object=_ex_iri("Person"),
+                )
+            ],
+        )
         return PlanGenerationOutput(
             question=q,
             plan=plan,
@@ -651,35 +656,149 @@ class DeterministicPlanner:
 # --- PydanticAI planner (optional) -----------------------------------------
 
 
-def build_pydantic_ai_planner(model: str) -> Planner:
-    """Construct a PydanticAI-backed planner. Imports are deferred so that the
-    optional dependency does not block test execution."""
+_SYSTEM_PROMPT = """\
+You produce strict QueryPlan IR objects (NEVER raw SPARQL) for a graph
+database. Your output MUST validate against the PlanGenerationOutput Pydantic
+schema.
+
+Workflow guarantees:
+
+- Use ONLY the schema terms given in this prompt. Do not invent prefixes,
+  classes, properties, named graphs, or individuals.
+- Prefer precise filters over broad graph scans.
+- Use OPTIONAL only for genuinely optional information. Place a FILTER inside
+  OPTIONAL when the filter should only constrain optional bindings.
+- Use FILTER NOT EXISTS for absence-of-pattern semantics. Use MINUS only when
+  it is specifically more appropriate.
+- Use subqueries for top-N, grouped aggregation, and nested constraints.
+- Use aggregates only with a valid GROUP BY.
+- Always add a reasonable LIMIT for exploratory SELECT queries.
+- Set needs_clarification=true only when the question cannot be safely
+  mapped to known schema terms — and supply a concrete clarification_question.
+
+Hard prohibitions:
+
+- NEVER write raw SPARQL.
+- NEVER use unsupported SPARQL features (DESCRIBE, SPARQL Update,
+  arbitrary SERVICE).
+- NEVER use unbounded property paths without explicit justification.
+
+The available schema and the QueryPlan IR JSON schema are appended below.
+"""
+
+
+@dataclass
+class PydanticAIPlannerConfig:
+    model: str
+    """Model identifier (e.g. ``anthropic:claude-sonnet-4-6``)."""
+
+    schema: SchemaSnapshot | None = None
+    """Schema snapshot to expose to the planner."""
+
+    examples: list[dict[str, Any]] = field(default_factory=list)
+    """Plan examples to include in the system prompt."""
+
+    max_repair_attempts: int = 2
+    """Number of times to feed validator errors back and ask for a repair."""
+
+
+def _format_schema_for_prompt(snap: SchemaSnapshot) -> str:
+    """Render a schema snapshot as compact, LLM-friendly JSON."""
+    payload = {
+        "prefixes": snap.prefixes,
+        "classes": [c.model_dump(exclude_none=True) for c in snap.classes],
+        "properties": [p.model_dump(exclude_none=True) for p in snap.properties],
+        "named_graphs": [g.model_dump(exclude_none=True) for g in snap.named_graphs],
+        "individuals": [i.model_dump(exclude_none=True) for i in snap.individuals],
+    }
+    return json.dumps(payload, indent=2, sort_keys=True)
+
+
+def _build_full_system_prompt(cfg: PydanticAIPlannerConfig) -> str:
+    schema_block = _format_schema_for_prompt(cfg.schema or SchemaSnapshot())
+    qp_schema = json.dumps(
+        TypeAdapter(PlanGenerationOutput).json_schema(), indent=2, sort_keys=True
+    )
+    examples_block = ""
+    if cfg.examples:
+        examples_block = "\n\nExamples (for reference):\n" + json.dumps(
+            cfg.examples, indent=2, sort_keys=True
+        )
+    return (
+        _SYSTEM_PROMPT
+        + "\n\n## Available schema\n```json\n"
+        + schema_block
+        + "\n```\n\n## Output schema (PlanGenerationOutput)\n```json\n"
+        + qp_schema
+        + "\n```"
+        + examples_block
+    )
+
+
+def build_pydantic_ai_planner(
+    model: str,
+    *,
+    schema: SchemaProvider | None = None,
+    examples: list[dict[str, Any]] | None = None,
+    max_repair_attempts: int = 2,
+    validator: QueryPlanValidator | None = None,
+) -> Planner:
+    """Construct a PydanticAI-backed planner with schema context + repair loop.
+
+    The agent is given the available schema, the QueryPlan IR JSON schema, and
+    optional plan examples in its system prompt. After each generation, the
+    plan is validated; if validation fails, structured errors are fed back to
+    the LLM for up to ``max_repair_attempts`` iterations.
+
+    Imports are deferred so that the optional ``pydantic-ai`` dependency does
+    not block test execution.
+    """
     try:
-        from pydantic_ai import Agent  # type: ignore
+        from pydantic_ai import Agent
     except ImportError as exc:  # pragma: no cover - depends on optional extra
         raise ImportError(
-            "pydantic-ai is required for the LLM planner; "
-            "install with `pip install graph-mcp[ai]`"
+            "pydantic-ai is required for the LLM planner; install with `pip install graph-mcp[ai]`"
         ) from exc
 
-    system = (
-        "You produce strict QueryPlan IR objects (NEVER raw SPARQL) for a graph "
-        "database. Use only schema terms supplied in context. Prefer precise "
-        "filters over broad scans. Use OPTIONAL only for optional information; "
-        "place FILTER inside OPTIONAL when the filter should only constrain "
-        "optional bindings. Use FILTER NOT EXISTS for absence-of-pattern "
-        "semantics. Use subqueries for top-N and grouped aggregation. Always "
-        "add a reasonable LIMIT for exploratory SELECT queries. Set "
-        "needs_clarification=true only when the question cannot be safely "
-        "mapped to known schema terms."
+    snap = schema.snapshot() if schema is not None else SchemaSnapshot()
+    cfg = PydanticAIPlannerConfig(
+        model=model,
+        schema=snap,
+        examples=examples or [],
+        max_repair_attempts=max_repair_attempts,
     )
+    system = _build_full_system_prompt(cfg)
     agent: Any = Agent(model=model, output_type=PlanGenerationOutput, system_prompt=system)
 
-    class _Wrapper:
+    class _LLMPlanner:
+        def __init__(self) -> None:
+            self.last_repair_attempted: bool = False
+            self.last_repair_succeeded: bool = False
+
         def plan(
             self, question: str, *, resolver: TermResolver | None = None
         ) -> PlanGenerationOutput:
-            res = agent.run_sync(question)
-            return res.output
+            self.last_repair_attempted = False
+            self.last_repair_succeeded = False
+            output: PlanGenerationOutput = agent.run_sync(question).output
 
-    return _Wrapper()
+            if validator is None:
+                return output
+
+            for attempt in range(cfg.max_repair_attempts):
+                result = validator.validate(output.plan)
+                if result.ok:
+                    if attempt > 0:
+                        self.last_repair_succeeded = True
+                    return output
+                self.last_repair_attempted = True
+                feedback = (
+                    "Your previous plan failed validation with these errors:\n"
+                    + "\n".join(f"- {e.code}: {e.message}" for e in result.errors)
+                    + "\n\nProduce a corrected PlanGenerationOutput."
+                )
+                output = agent.run_sync(question + "\n\n" + feedback).output
+
+            return output
+
+    return _LLMPlanner()

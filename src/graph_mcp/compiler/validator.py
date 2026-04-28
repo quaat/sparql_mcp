@@ -77,8 +77,17 @@ class _Scope:
     seen: set[str] = field(default_factory=set)
     """Variables that *may* be bound (e.g., inside an OPTIONAL)."""
 
+    values_constraints: dict[str, set[str]] = field(default_factory=dict)
+    """For each variable, the set of IRI values it has been restricted to via
+    a sibling :class:`ValuesPattern` in this scope. Empty if unrestricted.
+    Used by the named-graph allowlist check."""
+
     def fork(self) -> _Scope:
-        return _Scope(bound=set(self.bound), seen=set(self.seen))
+        return _Scope(
+            bound=set(self.bound),
+            seen=set(self.seen),
+            values_constraints={k: set(v) for k, v in self.values_constraints.items()},
+        )
 
     def merge_required(self, other: _Scope) -> None:
         self.bound |= other.bound
@@ -140,7 +149,17 @@ class QueryPlanValidator:
 
     def validate(self, plan: QueryPlan) -> ValidationResult:
         ctx = _Ctx()
-        ctx.prefixes = {p.prefix: p.iri for p in plan.prefixes}
+        # Build the prefix map and detect conflicts (same prefix → different IRI).
+        ctx.prefixes = {}
+        for p in plan.prefixes:
+            existing = ctx.prefixes.get(p.prefix)
+            if existing is not None and existing != p.iri:
+                ctx.error(
+                    "prefix_conflict",
+                    f"prefix {p.prefix!r} declared twice with different IRIs: "
+                    f"{existing!r} vs {p.iri!r}",
+                )
+            ctx.prefixes[p.prefix] = p.iri
         outer = _Scope()
 
         if isinstance(plan, SelectPlan):
@@ -167,6 +186,21 @@ class QueryPlanValidator:
         *,
         top_level: bool,
     ) -> _Scope:
+        # Prefix policy: prefixes are declared once at the top of the plan.
+        # Nested SELECTs (subqueries) must not redeclare them — there is no
+        # well-defined per-subquery prefix scope in our renderer, and the
+        # rendered SPARQL has a single PREFIX block at the top.
+        if not top_level and plan.prefixes:
+            ctx.error(
+                "subquery_prefixes_not_allowed",
+                "subquery SelectPlan must not declare prefixes; "
+                "declare all prefixes on the top-level plan",
+                hint=(
+                    "Move the prefix declarations to the outermost SelectPlan/"
+                    "AskPlan/ConstructPlan."
+                ),
+            )
+
         scope = outer.fork()
         ctx.path.append("where")
         try:
@@ -196,20 +230,36 @@ class QueryPlanValidator:
         # ORDER BY uses scope after projection: aliases are visible as variables.
         order_scope = scope.fork()
         order_scope.bound |= projected_names
+        # In aggregate queries, ORDER BY may only reference grouped variables,
+        # aggregate expressions, or projection aliases.
+        is_aggregate = bool(plan.group_by) or any(
+            self._contains_aggregate(p.expression)
+            for p in plan.projection
+            if p.expression is not None
+        )
+        grouped = {self._var_name(g) for g in plan.group_by if isinstance(g, Var)}
         ctx.path.append("order_by")
         try:
             for i, oc in enumerate(plan.order_by):
                 ctx.path.append(i)
                 try:
                     self._check_expr_vars(oc.expression, ctx, order_scope)
+                    if is_aggregate:
+                        free = self._collect_non_aggregated_vars(oc.expression)
+                        for v in free:
+                            if v not in grouped and v not in projected_names:
+                                ctx.error(
+                                    "order_by_non_grouped",
+                                    f"ORDER BY in an aggregate query references ?{v} "
+                                    "which is neither grouped nor a projection alias",
+                                )
                 finally:
                     ctx.path.pop()
         finally:
             ctx.path.pop()
 
-        # LIMIT / OFFSET
-        if top_level:
-            self._check_limit(plan.limit, ctx)
+        # LIMIT / OFFSET — enforced at every level (top-level *and* subqueries).
+        self._check_limit(plan.limit, ctx)
 
         # When this SELECT is a subquery, only `projected_names` escape outward.
         out = _Scope()
@@ -217,9 +267,7 @@ class QueryPlanValidator:
         out.seen |= projected_names
         return out
 
-    def _validate_projection(
-        self, plan: SelectPlan, ctx: _Ctx, scope: _Scope
-    ) -> set[str]:
+    def _validate_projection(self, plan: SelectPlan, ctx: _Ctx, scope: _Scope) -> set[str]:
         if not plan.projection:
             # SELECT * — projection is the union of bound variables.
             if not scope.bound and not scope.seen:
@@ -230,12 +278,16 @@ class QueryPlanValidator:
             return set(scope.bound | scope.seen)
 
         seen_names: set[str] = set()
+        alias_names: set[str] = set()
         out: set[str] = set()
-        has_aggregate = any(
+        # An aggregate query is one with any aggregate expression in projection
+        # OR a non-empty GROUP BY clause.
+        has_aggregate = bool(plan.group_by) or any(
             self._contains_aggregate(p.expression)
             for p in plan.projection
             if p.expression is not None
         )
+        grouped_names = {self._var_name(g) for g in plan.group_by if isinstance(g, Var)}
         for i, p in enumerate(plan.projection):
             ctx.path.append(i)
             try:
@@ -253,9 +305,7 @@ class QueryPlanValidator:
                                 "from the projection."
                             ),
                         )
-                    if has_aggregate and p.var.name not in {
-                        self._var_name(g) for g in plan.group_by if isinstance(g, Var)
-                    }:
+                    if has_aggregate and p.var.name not in grouped_names:
                         ctx.error(
                             "non_grouped_projection",
                             f"variable ?{p.var.name} appears in projection alongside aggregates "
@@ -264,19 +314,41 @@ class QueryPlanValidator:
                         )
                 if p.expression is not None:
                     self._check_expr_vars(p.expression, ctx, scope, allow_aggregate=True)
-                    if p.alias is not None and p.alias.name in scope.bound:
-                        ctx.error(
-                            "alias_collision",
-                            f"projection alias ?{p.alias.name} collides with an existing variable",
-                        )
+                    if p.alias is not None:
+                        if p.alias.name in scope.bound:
+                            ctx.error(
+                                "alias_collision",
+                                f"projection alias ?{p.alias.name} collides with an "
+                                "existing variable",
+                            )
+                        if p.alias.name in alias_names:
+                            ctx.error(
+                                "alias_collision",
+                                f"projection alias ?{p.alias.name} collides with another alias",
+                            )
+                        alias_names.add(p.alias.name)
+                    # In an aggregate query, every variable inside the projected
+                    # expression that appears OUTSIDE an aggregate must be in GROUP BY.
+                    # This catches e.g. (?x + COUNT(?y) AS ?bad) with ?x not grouped.
+                    if has_aggregate:
+                        free_outside_agg = self._collect_non_aggregated_vars(p.expression)
+                        for v in free_outside_agg:
+                            if v not in grouped_names:
+                                ctx.error(
+                                    "non_grouped_in_expression",
+                                    f"variable ?{v} appears outside an aggregate in a "
+                                    "projected expression but is not in GROUP BY",
+                                    hint=(
+                                        f"Add ?{v} to GROUP BY, or wrap it in an "
+                                        "aggregate (e.g. SAMPLE)."
+                                    ),
+                                )
                 out.add(name)
             finally:
                 ctx.path.pop()
         return out
 
-    def _validate_group_by(
-        self, plan: SelectPlan, ctx: _Ctx, scope: _Scope
-    ) -> set[str]:
+    def _validate_group_by(self, plan: SelectPlan, ctx: _Ctx, scope: _Scope) -> set[str]:
         names: set[str] = set()
         for i, item in enumerate(plan.group_by):
             ctx.path.append(i)
@@ -315,9 +387,7 @@ class QueryPlanValidator:
 
     # --- WHERE / patterns -------------------------------------------------
 
-    def _validate_where(
-        self, patterns: list[Pattern], ctx: _Ctx, scope: _Scope
-    ) -> None:
+    def _validate_where(self, patterns: list[Pattern], ctx: _Ctx, scope: _Scope) -> None:
         ctx.depth += 1
         if ctx.depth > self.policy.max_query_depth:
             ctx.error(
@@ -373,8 +443,29 @@ class QueryPlanValidator:
                 )
             scope.bound.add(p.var.name)
         elif isinstance(p, ValuesPattern):
-            for v in p.variables:
+            for col, v in enumerate(p.variables):
                 scope.bound.add(v.name)
+                # Capture per-variable IRI constraints so a downstream GRAPH ?v
+                # can be proven safe against the allowlist. Mixed-type rows or
+                # rows containing non-IRI values invalidate the constraint.
+                iris: set[str] = set()
+                bad = False
+                for row in p.rows:
+                    cell = row[col]
+                    if isinstance(cell, Iri):
+                        iris.add(cell.value)
+                    elif isinstance(cell, PrefixedName):
+                        resolved = self._resolve_iri(cell, ctx)
+                        if resolved is None:
+                            bad = True
+                            break
+                        iris.add(resolved)
+                    else:
+                        # UNDEF or a literal: cannot constrain to IRIs
+                        bad = True
+                        break
+                if not bad and iris:
+                    scope.values_constraints[v.name] = iris
         elif isinstance(p, GraphPattern):
             if isinstance(p.graph, (Iri, PrefixedName)):
                 iri = self._resolve_iri(p.graph, ctx)
@@ -384,15 +475,31 @@ class QueryPlanValidator:
                         f"named graph not in allowlist: {iri}",
                     )
             elif isinstance(p.graph, Var):
-                if not self.policy.allowed_graphs:
-                    # Variable graph is fine when no allowlist is configured.
-                    pass
-                else:
-                    ctx.warn(
-                        "variable_graph_with_allowlist",
-                        "GRAPH ?var with an allowlist may match graphs outside it; "
-                        "consider binding it to an explicit IRI.",
-                    )
+                if self.policy.allowed_graphs:
+                    # An allowlist is configured: only accept GRAPH ?g when a
+                    # prior VALUES has constrained ?g to allowlisted IRIs.
+                    constraint = scope.values_constraints.get(p.graph.name)
+                    if not constraint:
+                        ctx.error(
+                            "graph_variable_not_allowed",
+                            (
+                                f"GRAPH ?{p.graph.name} is not permitted with a "
+                                "named-graph allowlist; bind ?{name} via VALUES "
+                                "to allowlisted IRIs first."
+                            ).replace("{name}", p.graph.name),
+                            hint=(
+                                "Restrict ?{name} with a VALUES pattern that "
+                                "lists only allowlisted graph IRIs."
+                            ).replace("{name}", p.graph.name),
+                        )
+                    else:
+                        forbidden = [g for g in constraint if not self.policy.is_graph_allowed(g)]
+                        if forbidden:
+                            ctx.error(
+                                "graph_values_not_allowed",
+                                f"GRAPH ?{p.graph.name} is restricted to graphs "
+                                f"that include non-allowlisted IRIs: {sorted(forbidden)}",
+                            )
                 scope.bound.add(p.graph.name)
             self._validate_where(p.patterns, ctx, scope)
         elif isinstance(p, ServicePattern):
@@ -453,8 +560,15 @@ class QueryPlanValidator:
     def _path_complexity(self, path: PropertyPath) -> int:
         if isinstance(path, PropertyPathTerm):
             return 1
-        if isinstance(path, (PropertyPathInverse, PropertyPathZeroOrMore,
-                             PropertyPathOneOrMore, PropertyPathZeroOrOne)):
+        if isinstance(
+            path,
+            (
+                PropertyPathInverse,
+                PropertyPathZeroOrMore,
+                PropertyPathOneOrMore,
+                PropertyPathZeroOrOne,
+            ),
+        ):
             return 1 + self._path_complexity(path.operand)
         if isinstance(path, (PropertyPathSeq, PropertyPathAlt)):
             return 1 + sum(self._path_complexity(e) for e in path.elements)
@@ -493,10 +607,31 @@ class QueryPlanValidator:
                 "aggregate expression used where it is not permitted "
                 "(allowed in projection or HAVING)",
             )
+        # Recursively validate any nested EXISTS / NOT EXISTS patterns.
+        self._validate_nested_exists(expr, ctx, scope)
 
-    def _check_filter_placement_warning(
-        self, expr: Expression, ctx: _Ctx, scope: _Scope
-    ) -> None:
+    def _validate_nested_exists(self, expr: Expression, ctx: _Ctx, scope: _Scope) -> None:
+        """Walk an expression and validate EXISTS / NOT EXISTS sub-patterns.
+
+        The inner block sees outer-scope variables (so a reference to
+        ``?p`` inside ``NOT EXISTS { ?p ex:blocked ?x }`` is OK) but cannot
+        leak its locally introduced variables back outward. Safety checks
+        (SERVICE, named graphs, property paths, depth, triple counts,
+        unknown prefixes) are applied recursively.
+        """
+        if isinstance(expr, (NotExistsExpr, ExistsExpr)):
+            ctx.path.append("exists" if isinstance(expr, ExistsExpr) else "not_exists")
+            try:
+                inner = scope.fork()
+                self._validate_where(expr.patterns, ctx, inner)
+            finally:
+                ctx.path.pop()
+            # Inner-only bindings do not propagate to the outer scope.
+            return
+        for child in self._children(expr):
+            self._validate_nested_exists(child, ctx, scope)
+
+    def _check_filter_placement_warning(self, expr: Expression, ctx: _Ctx, scope: _Scope) -> None:
         # If a filter references variables that are only in `seen` (i.e.
         # introduced inside an OPTIONAL) without using bound(), warn.
         free = self._collect_outer_free_vars(expr)
@@ -588,9 +723,7 @@ class QueryPlanValidator:
                 f"LIMIT {limit} exceeds policy maximum {self.policy.max_limit}",
             )
 
-    def _validate_construct_template(
-        self, plan: ConstructPlan, ctx: _Ctx, scope: _Scope
-    ) -> None:
+    def _validate_construct_template(self, plan: ConstructPlan, ctx: _Ctx, scope: _Scope) -> None:
         # Variables in the template should be bound by WHERE.
         for i, t in enumerate(plan.template):
             ctx.path.append(("template", i))  # type: ignore[arg-type]
@@ -617,9 +750,7 @@ class QueryPlanValidator:
             finally:
                 ctx.path.pop()
 
-    def _resolve_iri(
-        self, ref: Iri | PrefixedName, ctx: _Ctx
-    ) -> str | None:
+    def _resolve_iri(self, ref: Iri | PrefixedName, ctx: _Ctx) -> str | None:
         if isinstance(ref, Iri):
             return ref.value
         # PrefixedName

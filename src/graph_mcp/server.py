@@ -32,6 +32,7 @@ from graph_mcp.mcp_tools.resources import (
     query_plan_schema_json,
     schema_classes_json,
     schema_examples_json,
+    schema_individuals_json,
     schema_named_graphs_json,
     schema_prefixes_json,
     schema_properties_json,
@@ -109,6 +110,14 @@ def build_server(
         """Known named graphs as JSON."""
         return schema_named_graphs_json(schema)
 
+    @mcp.resource("graph://schema/individuals")
+    def res_individuals() -> str:
+        """Known individuals (capped) as JSON.
+
+        Useful when the user mentions a specific entity by name.
+        """
+        return schema_individuals_json(schema)
+
     @mcp.resource("graph://schema/examples")
     def res_examples() -> str:
         """Example QueryPlan objects keyed to common questions."""
@@ -153,6 +162,7 @@ def build_server(
         return tool_explain_query_plan(input, validator)
 
     if policy.enable_raw_sparql:
+
         @mcp.tool()
         async def execute_sparql_raw(input: RawSparqlInput) -> RawSparqlOutput:
             """Expert-mode raw SPARQL execution. Read-only; gated by policy."""

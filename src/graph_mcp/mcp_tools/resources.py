@@ -31,6 +31,11 @@ def schema_named_graphs_json(schema: SchemaProvider) -> str:
     return json.dumps([g.model_dump() for g in snap.named_graphs], indent=2)
 
 
+def schema_individuals_json(schema: SchemaProvider) -> str:
+    snap = schema.snapshot()
+    return json.dumps([i.model_dump() for i in snap.individuals], indent=2)
+
+
 def schema_examples_json(schema: SchemaProvider) -> str:
     snap = schema.snapshot()
     return json.dumps([e.model_dump() for e in snap.examples], indent=2)
