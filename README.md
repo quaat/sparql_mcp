@@ -63,7 +63,18 @@ pip install -e ".[dev]"           # core + dev tools
 pip install -e ".[dev,ai]"        # add the optional PydanticAI planner
 ```
 
-Requires Python 3.11+. Tests are pinned to a non-free-threaded build.
+### Compatibility matrix
+
+| Python | Pydantic | Status |
+| --- | --- | --- |
+| 3.11 | 2.6 – 2.13 | CI green |
+| 3.12 | 2.6 – 2.13 | CI green |
+| 3.13 | 2.6 – 2.13 | CI green; free-threaded build (``python3.13t``) is **not** supported (CFFI dependency) |
+
+The recursive Pydantic IR is pinned to Pydantic ``>=2.6,<3``. The
+import path is stress-tested across hash seeds (see
+``tests/test_import_robustness.py``), so re-introducing a fragile
+forward-ref strategy will fail CI before merge.
 
 ## Configuration
 
@@ -82,8 +93,42 @@ All settings come from environment variables (see `.env.example`):
 | `GRAPH_MCP_MAX_QUERY_DEPTH` | `8` | Nesting cap. |
 | `GRAPH_MCP_MAX_PROPERTY_PATH_COMPLEXITY` | `16` | Property-path AST cap. |
 | `GRAPH_MCP_ALLOW_UNBOUNDED_PATHS` | `false` | Permit `*`/`+` paths. |
+| `GRAPH_MCP_ALLOWED_PATH_PREDICATES` | _(empty)_ | CSV allowlist for property-path predicate IRIs. Empty = anything in `?p` etc. |
+| `GRAPH_MCP_ALLOW_DEFAULT_PREFIX_OVERRIDE` | `false` | Permit plans to redefine `rdf`, `rdfs`, `xsd`, `owl`, `skos`, `dct`, `foaf`. |
 | `GRAPH_MCP_LOCAL_GRAPH_FILE` | _(empty)_ | Turtle file to load into the local executor. |
+| `GRAPH_MCP_SCHEMA_PROVIDER` | `auto` | One of `static`, `sparql`, `auto`. See the schema-provider section. |
+| `GRAPH_MCP_SCHEMA_CACHE_TTL_SECONDS` | `300` | TTL for the cached schema snapshot. |
+| `GRAPH_MCP_SCHEMA_DISCOVERY_TIMEOUT_MS` | `10000` | Per-query timeout for discovery SPARQL. |
+| `GRAPH_MCP_SCHEMA_MAX_CLASSES` | `200` | Cap on discovered classes. |
+| `GRAPH_MCP_SCHEMA_MAX_PROPERTIES` | `500` | Cap on discovered properties. |
+| `GRAPH_MCP_SCHEMA_MAX_INDIVIDUALS` | `200` | Cap on discovered individuals. |
+| `GRAPH_MCP_SCHEMA_MAX_NAMED_GRAPHS` | `200` | Cap on discovered named graphs. |
+| `GRAPH_MCP_SCHEMA_DISCOVERY_ON_STARTUP` | `true` | Run an initial schema refresh when the server starts (only when using the SPARQL provider). |
 | `GRAPH_MCP_LOG_LEVEL` | `INFO` | Logging level (logs go to stderr). |
+
+### Schema-provider modes
+
+| Mode | Behavior |
+| --- | --- |
+| `static` | Always use `StaticSchemaProvider`. Resources return only what the host injects via the `schema=` argument to `build_server`. |
+| `sparql` | Use `SparqlSchemaProvider` and require an endpoint. Discovery runs at startup (configurable) and on every `refresh_schema` tool call. |
+| `auto` (default) | Use `SparqlSchemaProvider` when `GRAPH_MCP_ENDPOINT_URL` or `GRAPH_MCP_LOCAL_GRAPH_FILE` is set; otherwise fall back to `static`. |
+
+The `SparqlSchemaProvider` discovers:
+
+- declared classes (`rdfs:Class` / `owl:Class`) and instance-observed
+  classes (`?s a ?cls`);
+- declared properties (`rdf:Property`, `owl:ObjectProperty`,
+  `owl:DatatypeProperty`) and observed predicates;
+- `rdfs:label` and `skos:prefLabel`;
+- `rdfs:domain` / `rdfs:range`;
+- named graphs (`GRAPH ?g`);
+- individuals (capped).
+
+Discovery is best-effort: failed sub-queries are recorded in the snapshot's
+``diagnostics`` list (visible at ``graph://schema/status``) rather than
+raising. Generated `prefixed_name` values are filled in from configured
+prefixes.
 
 ## Running the server
 
@@ -269,18 +314,32 @@ required pattern kinds, required tokens in the rendered SPARQL, forbidden
 features, and execution expectations.
 
 ### Enable raw SPARQL safely
-Set `GRAPH_MCP_ENABLE_RAW_SPARQL=true`. The tool still:
+Raw SPARQL is **disabled by default**. To enable it, set
+`GRAPH_MCP_ENABLE_RAW_SPARQL=true`. Even then, the tool runs every input
+through a real token-aware scanner (`graph_mcp/mcp_tools/sparql_scanner.py`)
+that distinguishes default-state code from string literals, comments, and
+IRI references. Specifically:
 
-- strips comments and string literals before keyword matching, so `# DROP`
-  in a comment or `"INSERT"` in a string literal does not false-positive;
-- rejects `INSERT`/`DELETE`/`DROP`/`CLEAR`/`LOAD`/`CREATE`/`COPY`/`MOVE`/`ADD`
-  via word-boundary matching (catches `INSERT\nDATA`);
-- rejects `DESCRIBE`;
-- rejects `SERVICE` unless its endpoint IRI exactly matches the allowlist;
-  also rejects `SERVICE ?var` and `SERVICE prefix:name`;
-- infers the actual query form from the cleaned text and rejects requests
-  whose `expected_query_type` does not match;
-- enforces the configured timeout and row cap.
+- comments (`#…`) start a comment **only** in default state, so
+  `<http://example.org/#fragment>` is never mistaken for one;
+- string literals (single, double, triple-quoted) are opaque to keyword
+  detection — `"# INSERT DATA"` is a string, not an INSERT;
+- `INSERT`/`DELETE`/`DROP`/`CLEAR`/`LOAD`/`CREATE`/`COPY`/`MOVE`/`ADD` are
+  rejected via token-level matching (catches `INSERT\nDATA`,
+  `INSERT\tDATA`, `Insert\ndata`);
+- `WITH … DELETE` is rejected (`WITH` itself is treated as forbidden);
+- `DESCRIBE` is rejected;
+- `SERVICE <iri>` is permitted only when the *exact* IRI matches the
+  allowlist; `SERVICE ?var` and `SERVICE prefix:name` are rejected;
+- the actual query form is inferred from the first query keyword in the
+  token stream and must match `expected_query_type`;
+- raw `SELECT` and `CONSTRUCT` queries must include an explicit top-level
+  `LIMIT` no greater than the effective `max_rows`; otherwise the request
+  is rejected. We never download an unbounded result and truncate
+  afterward.
+
+Raw mode is still *not* a full SPARQL parser. It is best-effort
+defence-in-depth around a feature you should generally leave off.
 
 ## Security model
 
@@ -303,39 +362,70 @@ Set `GRAPH_MCP_ENABLE_RAW_SPARQL=true`. The tool still:
 - Prefixes are declared once at the top of the plan; subquery prefix blocks
   are rejected.
 
+## How `max_rows` affects rendered LIMIT
+
+`query_graph(max_rows=N, dry_run=True)` caps the effective row limit
+*before* rendering. Specifically:
+
+```text
+effective_max_rows = min(max_rows or default_limit, max_limit)
+```
+
+For a top-level `SELECT` or `CONSTRUCT`:
+
+- if the plan has no `LIMIT`, it is set to `effective_max_rows`;
+- if the plan's `LIMIT` is greater than `effective_max_rows`, it is capped;
+- if the plan's `LIMIT` is smaller, it is preserved.
+
+This means `dry_run=true` shows you what will actually be sent to the
+endpoint, and remote endpoints are never asked to materialize unbounded
+results before truncation. Subquery `LIMIT`s are capped at `policy.max_limit`
+but never have a default injected (changing subquery semantics is unsafe).
+
+For raw SPARQL, the rule is stricter: raw `SELECT` / `CONSTRUCT` queries
+must include an explicit top-level `LIMIT` no greater than
+`effective_max_rows` or the request is rejected.
+
 ## Known limitations
 
 The following are explicit, current limitations — if any of these is a
 blocker for you, please open an issue.
 
-- **Deterministic planner is keyword-matching.** The default planner in
-  `evals/agent.py` is hand-coded against the question strings of the bundled
-  golden cases. Its 100% case-pass rate is not evidence of LLM planning
-  quality.
-- **PydanticAI planner is opt-in.** Requires `pip install -e .[ai]` and an
-  API key. The planner injects schema, IR JSON Schema, and golden examples
-  into the system prompt and runs up to two validator-feedback repair
-  attempts; we do not bundle prompt-tuning runs.
+- **Deterministic planner is keyword-matching.** The hand-coded
+  `DeterministicPlanner` in `evals/agent.py` is aligned with the bundled
+  `golden_cases.yaml` keywords; its 100 % score on that file is *not*
+  evidence of LLM planning quality. The `evals/golden_cases_adversarial.yaml`
+  file contains paraphrased, plural/singular variations and clarification
+  traps the keyword baseline cannot answer; that file is the honest
+  benchmark for an LLM planner.
+- **LLM eval is opt-in.** The PydanticAI planner is enabled by
+  `pip install -e .[ai]`. Running it requires an API key and is not part
+  of CI.
 - **Raw SPARQL.** Disabled by default. When enabled, the pre-flight check
-  is comment-and-string aware and verifies the actual query form, but it is
-  not a full SPARQL parser. Treat raw mode as an expert escape hatch and
-  allowlist sparingly.
+  is a token-aware scanner — it tracks string/IRI/comment states and
+  rejects update keywords, DESCRIBE, and unallowlisted SERVICE — but it is
+  *not* a full SPARQL parser. Raw `SELECT`/`CONSTRUCT` must include an
+  explicit top-level `LIMIT`; the server will reject otherwise.
 - **Remote `CONSTRUCT`.** The HTTP endpoint asks for `text/turtle` /
   `application/n-triples` / `application/rdf+xml` and parses the response
   via rdflib. Endpoints that ignore the `Accept` header and return JSON or
-  HTML will produce an `EndpointError("unsupported CONSTRUCT response
+  HTML produce an `EndpointError("unsupported CONSTRUCT response
   content-type")` — never a silent empty result.
-- **Schema discovery.** Two providers are shipped: the static
-  `StaticSchemaProvider` and the endpoint-backed `SparqlSchemaProvider`,
-  which discovers classes, properties, individuals, and named graphs via
-  a small set of `SELECT` queries and caches the result for
-  `cache_ttl_seconds`. Discovery is best-effort: failures (timeouts,
-  unsupported endpoints) yield empty sections rather than errors.
+- **Schema discovery is best-effort.** `SparqlSchemaProvider` records
+  per-section errors (timeouts, unsupported features) as
+  ``SchemaDiagnostic`` entries on the snapshot rather than raising. Inspect
+  them via `graph://schema/status`.
 - **Local timeout.** `LocalRdflibEndpoint` runs queries in a worker thread
-  and abandons results on timeout, but rdflib has no first-class
-  cancellation, so a runaway query continues to consume CPU until it
+  under `asyncio.wait_for`. The timeout fires and the caller sees
+  `EndpointError`, but **rdflib has no first-class cancellation**, so a
+  runaway query continues to consume CPU on its worker thread until it
   finishes. For hard cancellation, query a real SPARQL server via
   `HttpSparqlEndpoint` against an engine that enforces query budgets.
 - **`DESCRIBE`** is intentionally not in the IR.
 - **SPARQL Update** is intentionally not in the IR and is rejected by the
   raw-SPARQL pre-flight when raw mode is enabled.
+- **Production claims.** This server has not been deployed under production
+  load by the authors. CI covers static checks, the import stress matrix
+  (Python 3.11–3.13 × 11 hash seeds), tests, and the deterministic eval.
+  Real-world load testing, multi-tenant authn, and billing/quota are out
+  of scope.

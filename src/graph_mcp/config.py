@@ -44,11 +44,50 @@ class Settings(BaseSettings):
     max_property_path_complexity: Annotated[int, Field(gt=0, le=256)] = 16
     allow_unbounded_paths: bool = False
 
+    allowed_path_predicates: list[str] = []
+    """When non-empty, every property-path predicate IRI must appear in this list.
+
+    Useful when the host wants to restrict which predicates can be traversed
+    in property paths (and especially in unbounded ``+``/``*`` paths).
+    """
+
+    allow_default_prefix_override: bool = False
+    """Allow plans to redefine built-in prefixes (rdf, rdfs, xsd, etc.).
+
+    Disabled by default — a plan that redefines ``xsd:`` to point at a
+    different IRI is almost always a mistake or an attempt to confuse the
+    renderer's datatype-IRI compaction logic.
+    """
+
     local_graph_file: Path | None = None
+
+    # --- Schema discovery -------------------------------------------------
+
+    schema_provider: Annotated[str, Field(pattern=r"^(static|sparql|auto)$")] = "auto"
+    """Which :class:`SchemaProvider` to instantiate.
+
+    - ``static`` — use ``StaticSchemaProvider`` (empty by default).
+    - ``sparql`` — use ``SparqlSchemaProvider``; requires an endpoint.
+    - ``auto`` — use ``SparqlSchemaProvider`` when ``endpoint_url`` or
+      ``local_graph_file`` is configured, else fall back to static.
+    """
+
+    schema_cache_ttl_seconds: Annotated[float, Field(ge=0)] = 300.0
+    schema_discovery_timeout_ms: Annotated[int, Field(gt=0, le=600_000)] = 10_000
+    schema_max_classes: Annotated[int, Field(gt=0, le=10_000)] = 200
+    schema_max_properties: Annotated[int, Field(gt=0, le=10_000)] = 500
+    schema_max_individuals: Annotated[int, Field(gt=0, le=10_000)] = 200
+    schema_max_named_graphs: Annotated[int, Field(gt=0, le=10_000)] = 200
+    schema_discovery_on_startup: bool = True
 
     log_level: str = "INFO"
 
-    @field_validator("allowed_graphs", "allowed_service_endpoints", mode="before")
+    @field_validator(
+        "allowed_graphs",
+        "allowed_service_endpoints",
+        "allowed_path_predicates",
+        mode="before",
+    )
     @classmethod
     def _coerce_csv(cls, value: object) -> list[str]:
         return _split_csv(value)  # type: ignore[arg-type]

@@ -525,43 +525,102 @@ QueryPlan = Annotated[
 
 
 # --- Resolve forward references ------------------------------------------
-# Only the models that actually contain forward references need rebuilding.
-# Because every forward-referenced name (Expression, Pattern, SelectPlan,
-# PropertyPath) is defined in *this* module, Pydantic finds them in our
-# module globals without any custom type namespace.
+# Every forward-referenced name (Expression, Pattern, SelectPlan, PropertyPath)
+# is defined in *this* module. We rebuild every model that contains a forward
+# reference, passing the module globals explicitly. The explicit namespace
+# avoids any heuristic name-resolution that has historically caused slow or
+# intermittent imports on some Pydantic 2.x / Python 3.13 combinations.
 
-for _model in (
-    BinaryExpr,
-    UnaryExpr,
-    NotExpr,
-    InExpr,
-    FunctionExpr,
-    RegexExpr,
-    LangMatchesExpr,
-    NotExistsExpr,
-    ExistsExpr,
-    AggregateExpr,
-    DateTimeExpr,
-    PropertyPathInverse,
-    PropertyPathSeq,
-    PropertyPathAlt,
-    PropertyPathZeroOrMore,
-    PropertyPathOneOrMore,
-    PropertyPathZeroOrOne,
-    TriplePattern,
-    GroupPattern,
-    OptionalPattern,
-    UnionPattern,
-    MinusPattern,
-    FilterPattern,
-    BindPattern,
-    GraphPattern,
-    ServicePattern,
-    SubqueryPattern,
-    Projection,
-    OrderClause,
-    SelectPlan,
-    AskPlan,
-    ConstructPlan,
-):
-    _model.model_rebuild()
+_REBUILD_NAMESPACE: dict[str, object] = {
+    "Expression": Expression,
+    "Pattern": Pattern,
+    "PropertyPath": PropertyPath,
+    "QueryPlan": QueryPlan,
+    "SelectPlan": SelectPlan,
+    "AskPlan": AskPlan,
+    "ConstructPlan": ConstructPlan,
+    "Iri": Iri,
+    "PrefixedName": PrefixedName,
+    "Var": Var,
+    "LiteralValue": LiteralValue,
+    "RdfTerm": RdfTerm,
+    "Prefix": Prefix,
+    "Projection": Projection,
+    "OrderClause": OrderClause,
+    "BinaryExpr": BinaryExpr,
+    "UnaryExpr": UnaryExpr,
+    "NotExpr": NotExpr,
+    "InExpr": InExpr,
+    "FunctionExpr": FunctionExpr,
+    "RegexExpr": RegexExpr,
+    "BoundExpr": BoundExpr,
+    "LangMatchesExpr": LangMatchesExpr,
+    "NotExistsExpr": NotExistsExpr,
+    "ExistsExpr": ExistsExpr,
+    "AggregateExpr": AggregateExpr,
+    "DateTimeExpr": DateTimeExpr,
+    "PropertyPathTerm": PropertyPathTerm,
+    "PropertyPathInverse": PropertyPathInverse,
+    "PropertyPathSeq": PropertyPathSeq,
+    "PropertyPathAlt": PropertyPathAlt,
+    "PropertyPathZeroOrMore": PropertyPathZeroOrMore,
+    "PropertyPathOneOrMore": PropertyPathOneOrMore,
+    "PropertyPathZeroOrOne": PropertyPathZeroOrOne,
+    "TriplePattern": TriplePattern,
+    "GroupPattern": GroupPattern,
+    "OptionalPattern": OptionalPattern,
+    "UnionPattern": UnionPattern,
+    "MinusPattern": MinusPattern,
+    "FilterPattern": FilterPattern,
+    "BindPattern": BindPattern,
+    "GraphPattern": GraphPattern,
+    "ServicePattern": ServicePattern,
+    "SubqueryPattern": SubqueryPattern,
+    "ValuesPattern": ValuesPattern,
+}
+
+
+def _rebuild_recursive_models() -> None:
+    """Rebuild every model that contains a forward reference.
+
+    Called exactly once at import time. Splitting this into a function
+    isolates the rebuild work from module-level state for easier testing.
+    """
+    for _model in (
+        BinaryExpr,
+        UnaryExpr,
+        NotExpr,
+        InExpr,
+        FunctionExpr,
+        RegexExpr,
+        LangMatchesExpr,
+        NotExistsExpr,
+        ExistsExpr,
+        AggregateExpr,
+        DateTimeExpr,
+        PropertyPathInverse,
+        PropertyPathSeq,
+        PropertyPathAlt,
+        PropertyPathZeroOrMore,
+        PropertyPathOneOrMore,
+        PropertyPathZeroOrOne,
+        TriplePattern,
+        GroupPattern,
+        OptionalPattern,
+        UnionPattern,
+        MinusPattern,
+        FilterPattern,
+        BindPattern,
+        GraphPattern,
+        ServicePattern,
+        SubqueryPattern,
+        Projection,
+        OrderClause,
+        SelectPlan,
+        AskPlan,
+        ConstructPlan,
+    ):
+        _model.model_rebuild(_types_namespace=_REBUILD_NAMESPACE)
+
+
+_rebuild_recursive_models()

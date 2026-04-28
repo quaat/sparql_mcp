@@ -14,7 +14,9 @@ classifiers = [
 ]
 dependencies = [
     "mcp>=1.0.0",
-    "pydantic>=2.6",
+    # Pydantic 2.6+ is required for the recursive IR forward-ref handling.
+    # We exclude 3.0+ since the API may change; bump after verifying.
+    "pydantic>=2.6,<3",
     "pydantic-settings>=2.2",
     "httpx>=0.27",
     "rdflib>=7.0",

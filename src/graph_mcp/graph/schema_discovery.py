@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from datetime import UTC
 from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -59,6 +60,14 @@ class ExamplePlan(BaseModel):
     plan: dict[str, object]
 
 
+class SchemaDiagnostic(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    section: str
+    """Discovery section: classes / properties / individuals / named_graphs."""
+    error: str
+
+
 class SchemaSnapshot(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -68,6 +77,12 @@ class SchemaSnapshot(BaseModel):
     individuals: list[IndividualTerm] = Field(default_factory=list)
     named_graphs: list[NamedGraphTerm] = Field(default_factory=list)
     examples: list[ExamplePlan] = Field(default_factory=list)
+    diagnostics: list[SchemaDiagnostic] = Field(default_factory=list)
+    """Errors encountered during the most recent discovery refresh."""
+
+    last_refresh_at: str | None = None
+    """ISO-8601 timestamp of the last successful refresh, or ``None`` for a
+    snapshot that was never refreshed (e.g., a fresh static provider)."""
 
 
 class SchemaProvider(Protocol):
@@ -98,6 +113,7 @@ class SparqlDiscoveryConfig:
     max_classes: int = 200
     max_properties: int = 500
     max_individuals: int = 200
+    max_named_graphs: int = 200
     cache_ttl_seconds: float = 300.0
     """How long to keep a snapshot before re-querying."""
 
@@ -137,18 +153,40 @@ class SparqlSchemaProvider:
         return self._cache
 
     async def refresh(self) -> SchemaSnapshot:
-        """Re-query the endpoint and return the new snapshot."""
+        """Re-query the endpoint and return the new snapshot.
+
+        The optional ``force`` flag (call as ``await refresh()``) bypasses
+        the TTL check; the underlying signature is preserved for back-compat.
+        """
+        return await self._refresh(force=False)
+
+    async def refresh_force(self) -> SchemaSnapshot:
+        """Re-query the endpoint, ignoring the TTL cache."""
+        return await self._refresh(force=True)
+
+    async def _refresh(self, *, force: bool) -> SchemaSnapshot:
+        from datetime import datetime
+
         now = time.monotonic()
-        if self._cache is not None and (now - self._cache_at) < self._config.cache_ttl_seconds:
+        if (
+            not force
+            and self._cache is not None
+            and (now - self._cache_at) < self._config.cache_ttl_seconds
+        ):
             return self._cache
 
         cfg = self._config
         prefixes = dict(cfg.base_prefixes)
+        diagnostics: list[SchemaDiagnostic] = []
 
-        classes = await self._discover_classes(cfg)
-        properties = await self._discover_properties(cfg)
-        individuals = await self._discover_individuals(cfg)
-        named_graphs = await self._discover_named_graphs(cfg)
+        classes = await self._discover_classes(cfg, diagnostics)
+        properties = await self._discover_properties(cfg, diagnostics)
+        individuals = await self._discover_individuals(cfg, diagnostics)
+        named_graphs = await self._discover_named_graphs(cfg, diagnostics)
+
+        # Generate prefixed_name for every term whose IRI starts with a known prefix.
+        for term in (*classes, *properties, *individuals):
+            term.prefixed_name = _to_prefixed(term.iri, prefixes)
 
         snap = SchemaSnapshot(
             prefixes=prefixes,
@@ -156,6 +194,8 @@ class SparqlSchemaProvider:
             properties=properties,
             individuals=individuals,
             named_graphs=named_graphs,
+            diagnostics=diagnostics,
+            last_refresh_at=datetime.now(tz=UTC).isoformat(),
         )
         self._cache = snap
         self._cache_at = now
@@ -163,8 +203,21 @@ class SparqlSchemaProvider:
 
     # --- Discovery queries (best-effort) ---------------------------------
 
-    async def _select(self, sparql: str, *, timeout_ms: int, max_rows: int) -> list[dict[str, str]]:
-        """Execute a SELECT and return raw bindings."""
+    async def _select(
+        self,
+        sparql: str,
+        *,
+        timeout_ms: int,
+        max_rows: int,
+        section: str,
+        diagnostics: list[SchemaDiagnostic],
+    ) -> list[dict[str, str]]:
+        """Execute a SELECT and return raw bindings.
+
+        Records errors as :class:`SchemaDiagnostic` rather than raising; the
+        caller still gets ``[]`` on failure but the operator can see the
+        cause via ``graph://schema/status``.
+        """
         try:
             result = await self._endpoint.query(  # type: ignore[attr-defined]
                 sparql,
@@ -172,46 +225,166 @@ class SparqlSchemaProvider:
                 timeout_ms=timeout_ms,
                 max_rows=max_rows,
             )
-        except Exception:
+        except Exception as exc:
+            diagnostics.append(
+                SchemaDiagnostic(section=section, error=f"{type(exc).__name__}: {exc}")
+            )
             return []
         if getattr(result, "kind", None) != "select":
+            diagnostics.append(
+                SchemaDiagnostic(
+                    section=section,
+                    error=f"unexpected result kind: {getattr(result, 'kind', None)!r}",
+                )
+            )
             return []
         return [
             {var: binding.value for var, binding in row.bindings.items()} for row in result.rows
         ]
 
-    async def _discover_classes(self, cfg: SparqlDiscoveryConfig) -> list[ClassTerm]:
+    async def _discover_classes(
+        self, cfg: SparqlDiscoveryConfig, diag: list[SchemaDiagnostic]
+    ) -> list[ClassTerm]:
+        # Combine declared classes (rdfs:Class / owl:Class) with classes
+        # observed via ``?s a ?cls``. Use UNION so the query works on stores
+        # that lack ontology metadata.
         sparql = (
             "SELECT DISTINCT ?cls (SAMPLE(?l) AS ?label) WHERE { "
-            "  ?s a ?cls . "
+            "  { ?cls <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> "
+            "         <http://www.w3.org/2000/01/rdf-schema#Class> } "
+            "  UNION "
+            "  { ?cls <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> "
+            "         <http://www.w3.org/2002/07/owl#Class> } "
+            "  UNION "
+            "  { ?s <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> ?cls } "
             "  OPTIONAL { ?cls <http://www.w3.org/2000/01/rdf-schema#label> ?l } "
+            "  FILTER (isIRI(?cls)) "
             "} GROUP BY ?cls "
             f"LIMIT {cfg.max_classes}"
         )
-        rows = await self._select(sparql, timeout_ms=cfg.timeout_ms, max_rows=cfg.max_classes)
+        rows = await self._select(
+            sparql,
+            timeout_ms=cfg.timeout_ms,
+            max_rows=cfg.max_classes,
+            section="classes",
+            diagnostics=diag,
+        )
         return [ClassTerm(iri=r["cls"], label=r.get("label")) for r in rows if r.get("cls")]
 
-    async def _discover_properties(self, cfg: SparqlDiscoveryConfig) -> list[PropertyTerm]:
+    async def _discover_properties(
+        self, cfg: SparqlDiscoveryConfig, diag: list[SchemaDiagnostic]
+    ) -> list[PropertyTerm]:
+        """Discover properties by combining declared and observed predicates.
+
+        We intentionally split this into two queries: one for the basic
+        ``?p`` / label binding (uses GROUP BY safely because every row has
+        ?p bound), and a separate, simpler query for ``rdfs:domain`` /
+        ``rdfs:range`` which we aggregate in Python.
+
+        Some triple stores (notably rdflib) raise ``NotBoundError`` when
+        ``GROUP_CONCAT(DISTINCT ?x; SEPARATOR=' ')`` is combined with an
+        ``OPTIONAL`` that may leave ``?x`` unbound — so we avoid that
+        pattern entirely.
+        """
         sparql = (
             "SELECT DISTINCT ?p (SAMPLE(?l) AS ?label) WHERE { "
-            "  ?s ?p ?o . "
-            "  OPTIONAL { ?p <http://www.w3.org/2000/01/rdf-schema#label> ?l } "
+            "  { ?p <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> "
+            "       <http://www.w3.org/1999/02/22-rdf-syntax-ns#Property> } "
+            "  UNION "
+            "  { ?p <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> "
+            "       <http://www.w3.org/2002/07/owl#ObjectProperty> } "
+            "  UNION "
+            "  { ?p <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> "
+            "       <http://www.w3.org/2002/07/owl#DatatypeProperty> } "
+            "  UNION "
+            "  { ?s ?p ?o } "
+            "  OPTIONAL { "
+            "    ?p <http://www.w3.org/2000/01/rdf-schema#label> ?l "
+            "  } "
+            "  FILTER (isIRI(?p)) "
             "} GROUP BY ?p "
             f"LIMIT {cfg.max_properties}"
         )
-        rows = await self._select(sparql, timeout_ms=cfg.timeout_ms, max_rows=cfg.max_properties)
-        return [PropertyTerm(iri=r["p"], label=r.get("label")) for r in rows if r.get("p")]
+        rows = await self._select(
+            sparql,
+            timeout_ms=cfg.timeout_ms,
+            max_rows=cfg.max_properties,
+            section="properties",
+            diagnostics=diag,
+        )
+        out: list[PropertyTerm] = []
+        # Domain / range as a separate, side query. Aggregated in Python.
+        domain_range = await self._discover_property_domain_range(cfg, diag)
+        for r in rows:
+            iri = r.get("p")
+            if not iri:
+                continue
+            domain, range_ = domain_range.get(iri, ([], []))
+            out.append(
+                PropertyTerm(
+                    iri=iri,
+                    label=r.get("label"),
+                    domain=domain,
+                    range=range_,
+                )
+            )
+        return out
 
-    async def _discover_individuals(self, cfg: SparqlDiscoveryConfig) -> list[IndividualTerm]:
+    async def _discover_property_domain_range(
+        self, cfg: SparqlDiscoveryConfig, diag: list[SchemaDiagnostic]
+    ) -> dict[str, tuple[list[str], list[str]]]:
         sparql = (
-            "SELECT DISTINCT ?s (SAMPLE(?l) AS ?label) (SAMPLE(?t) AS ?type) WHERE { "
-            "  ?s a ?t . "
-            "  FILTER (!isBlank(?s)) "
-            "  OPTIONAL { ?s <http://www.w3.org/2000/01/rdf-schema#label> ?l } "
+            "SELECT ?p ?dom ?rng WHERE { "
+            "  { ?p <http://www.w3.org/2000/01/rdf-schema#domain> ?dom } "
+            "  UNION "
+            "  { ?p <http://www.w3.org/2000/01/rdf-schema#range> ?rng } "
+            "  FILTER (isIRI(?p)) "
+            f"}} LIMIT {cfg.max_properties * 4}"
+        )
+        rows = await self._select(
+            sparql,
+            timeout_ms=cfg.timeout_ms,
+            max_rows=cfg.max_properties * 4,
+            section="properties_domain_range",
+            diagnostics=diag,
+        )
+        out: dict[str, tuple[list[str], list[str]]] = {}
+        for r in rows:
+            iri = r.get("p")
+            if not iri:
+                continue
+            domain, range_ = out.setdefault(iri, ([], []))
+            if r.get("dom") and r["dom"] not in domain:
+                domain.append(r["dom"])
+            if r.get("rng") and r["rng"] not in range_:
+                range_.append(r["rng"])
+        return out
+
+    async def _discover_individuals(
+        self, cfg: SparqlDiscoveryConfig, diag: list[SchemaDiagnostic]
+    ) -> list[IndividualTerm]:
+        sparql = (
+            "SELECT DISTINCT ?s "
+            "(SAMPLE(?l) AS ?label) "
+            "(SAMPLE(?t) AS ?type) "
+            "WHERE { "
+            "  ?s <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> ?t . "
+            "  OPTIONAL { "
+            "    { ?s <http://www.w3.org/2000/01/rdf-schema#label> ?l } "
+            "    UNION "
+            "    { ?s <http://www.w3.org/2004/02/skos/core#prefLabel> ?l } "
+            "  } "
+            "  FILTER (isIRI(?s)) "
             "} GROUP BY ?s "
             f"LIMIT {cfg.max_individuals}"
         )
-        rows = await self._select(sparql, timeout_ms=cfg.timeout_ms, max_rows=cfg.max_individuals)
+        rows = await self._select(
+            sparql,
+            timeout_ms=cfg.timeout_ms,
+            max_rows=cfg.max_individuals,
+            section="individuals",
+            diagnostics=diag,
+        )
         out: list[IndividualTerm] = []
         for r in rows:
             iri = r.get("s")
@@ -221,7 +394,29 @@ class SparqlSchemaProvider:
             out.append(IndividualTerm(iri=iri, label=r.get("label"), types=types))
         return out
 
-    async def _discover_named_graphs(self, cfg: SparqlDiscoveryConfig) -> list[NamedGraphTerm]:
-        sparql = f"SELECT DISTINCT ?g WHERE {{ GRAPH ?g {{ ?s ?p ?o }} }} LIMIT {cfg.max_classes}"
-        rows = await self._select(sparql, timeout_ms=cfg.timeout_ms, max_rows=cfg.max_classes)
+    async def _discover_named_graphs(
+        self, cfg: SparqlDiscoveryConfig, diag: list[SchemaDiagnostic]
+    ) -> list[NamedGraphTerm]:
+        sparql = (
+            f"SELECT DISTINCT ?g WHERE {{ GRAPH ?g {{ ?s ?p ?o }} }} LIMIT {cfg.max_named_graphs}"
+        )
+        rows = await self._select(
+            sparql,
+            timeout_ms=cfg.timeout_ms,
+            max_rows=cfg.max_named_graphs,
+            section="named_graphs",
+            diagnostics=diag,
+        )
         return [NamedGraphTerm(iri=r["g"]) for r in rows if r.get("g")]
+
+
+def _to_prefixed(iri: str, prefixes: dict[str, str]) -> str | None:
+    """Return ``prefix:local`` if ``iri`` starts with a declared prefix IRI."""
+    from graph_mcp.models.literals import PREFIXED_LOCAL_REGEX
+
+    for prefix_name, prefix_iri in sorted(prefixes.items(), key=lambda kv: -len(kv[1])):
+        if iri.startswith(prefix_iri):
+            local = iri[len(prefix_iri) :]
+            if PREFIXED_LOCAL_REGEX.match(local):
+                return f"{prefix_name}:{local}"
+    return None

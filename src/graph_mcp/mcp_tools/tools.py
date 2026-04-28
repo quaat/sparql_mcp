@@ -7,13 +7,17 @@ decorators with their dependencies (validator, renderer, endpoint, schema).
 
 from __future__ import annotations
 
-import re as _re
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from graph_mcp.compiler import QueryPlanValidator, RenderedQuery, SparqlRenderer
 from graph_mcp.graph import GraphEndpoint, TermResolutionResult, TermResolver
+from graph_mcp.mcp_tools.sparql_scanner import (
+    find_top_level_limit,
+    infer_query_type,
+    reject_unsafe_raw,
+)
 from graph_mcp.models import (
     AskPlan,
     ConstructPlan,
@@ -45,6 +49,19 @@ class RenderSparqlInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     plan: QueryPlan
+
+
+class RenderSparqlOutput(BaseModel):
+    """Result of :func:`tool_render_sparql`.
+
+    If validation fails, ``rendered`` is ``None`` and ``validation`` carries
+    the structured errors. The tool never returns a fake empty SPARQL string.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    validation: ValidationResult
+    rendered: RenderedQuery | None = None
 
 
 class QueryGraphInput(BaseModel):
@@ -98,6 +115,38 @@ class RawSparqlOutput(BaseModel):
     raw_mode: Literal[True] = True
 
 
+class RefreshSchemaInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    force: bool = False
+
+
+class SchemaRefreshResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    provider: Literal["static", "sparql"]
+    refreshed: bool
+    last_refresh_at: str | None
+    classes_count: int
+    properties_count: int
+    individuals_count: int
+    named_graphs_count: int
+    diagnostics: list[str] = Field(default_factory=list)
+
+
+class SchemaStatus(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    provider: Literal["static", "sparql"]
+    last_refresh_at: str | None
+    cache_ttl_seconds: float
+    classes_count: int
+    properties_count: int
+    individuals_count: int
+    named_graphs_count: int
+    diagnostics: list[str] = Field(default_factory=list)
+
+
 # --- Pure tool functions ----------------------------------------------------
 
 
@@ -118,18 +167,19 @@ def tool_render_sparql(
     inp: RenderSparqlInput,
     validator: QueryPlanValidator,
     renderer: SparqlRenderer,
-) -> RenderedQuery:
+) -> RenderSparqlOutput:
+    """Validate then render a plan.
+
+    Returns the structured :class:`ValidationResult` together with a
+    :class:`RenderedQuery` when validation succeeded, or ``rendered=None`` when
+    it failed. The tool never fabricates an empty rendered SPARQL string.
+    """
     res = validator.validate(inp.plan)
     if not res.ok:
-        # Surface validation errors via warnings on the rendered query so the
-        # LLM still sees them; we still refuse to render an invalid plan.
-        return RenderedQuery(
-            sparql="",
-            query_type=_query_type(inp.plan),
-            warnings=res.errors,
-        )
+        return RenderSparqlOutput(validation=res, rendered=None)
     rendered = renderer.render(inp.plan)
-    return rendered.model_copy(update={"warnings": res.warnings})
+    rendered = rendered.model_copy(update={"warnings": res.warnings})
+    return RenderSparqlOutput(validation=res, rendered=rendered)
 
 
 async def tool_query_graph(
@@ -139,24 +189,53 @@ async def tool_query_graph(
     endpoint: GraphEndpoint,
     policy: SecurityPolicy,
 ) -> QueryGraphOutput:
+    """Validate, render, and (unless ``dry_run``) execute a plan.
+
+    The effective row limit is computed *before* rendering so that the
+    rendered ``LIMIT`` reflects the smaller of the request-level ``max_rows``
+    and the policy maximum. This protects remote endpoints from being asked
+    to materialize unbounded results before truncation.
+    """
     validation = validator.validate(inp.plan)
     out = QueryGraphOutput(validation=validation, dry_run=inp.dry_run)
     if not validation.ok:
         return out
-    rendered = renderer.render(inp.plan)
+
+    effective_max_rows = min(inp.max_rows or policy.default_limit, policy.max_limit)
+    capped_plan = _cap_top_level_limit(inp.plan, effective_max_rows)
+    rendered = renderer.render(capped_plan)
     out = out.model_copy(update={"rendered": rendered})
     if inp.dry_run:
         return out
 
     timeout_ms = inp.timeout_ms or policy.timeout_ms
-    max_rows = min(inp.max_rows or policy.default_limit, policy.max_limit)
     result = await endpoint.query(
         rendered.sparql,
         query_type=rendered.query_type,
         timeout_ms=timeout_ms,
-        max_rows=max_rows,
+        max_rows=effective_max_rows,
     )
     return out.model_copy(update={"result": result})
+
+
+def _cap_top_level_limit(plan: QueryPlan, effective_max_rows: int) -> QueryPlan:
+    """Return a plan whose top-level LIMIT is capped at ``effective_max_rows``.
+
+    - For ``SELECT`` and ``CONSTRUCT``: if ``limit`` is ``None`` or above the
+      cap, set it to ``effective_max_rows``; preserve a smaller existing limit.
+    - For ``ASK``: nothing to cap (boolean result).
+    - Subquery limits are *not* touched here; the renderer's normalize_plan
+      caps them at ``policy.max_limit`` separately.
+    """
+    if isinstance(plan, SelectPlan):
+        if plan.limit is None or plan.limit > effective_max_rows:
+            return plan.model_copy(update={"limit": effective_max_rows})
+        return plan
+    if isinstance(plan, ConstructPlan):
+        if plan.limit is None or plan.limit > effective_max_rows:
+            return plan.model_copy(update={"limit": effective_max_rows})
+        return plan
+    return plan
 
 
 def tool_explain_query_plan(
@@ -189,23 +268,53 @@ async def tool_execute_sparql_raw(
     endpoint: GraphEndpoint,
     policy: SecurityPolicy,
 ) -> RawSparqlOutput:
+    """Execute a raw SPARQL query under the policy.
+
+    Uses a token-aware scanner to:
+
+    - reject SPARQL Update keywords (INSERT/DELETE/DROP/...);
+    - reject DESCRIBE;
+    - require an absolute, allowlisted IRI for every SERVICE;
+    - infer the query form from the first query keyword and require
+      ``expected_query_type`` to match;
+    - require a conservative top-level LIMIT for SELECT and CONSTRUCT no
+      greater than the effective max_rows.
+    """
     if not policy.enable_raw_sparql:
         raise PermissionError("raw SPARQL execution is disabled by policy")
     sparql = inp.sparql
-    _reject_unsafe_raw(sparql, policy)
-    inferred = _infer_query_type(sparql)
+    tokens = reject_unsafe_raw(
+        sparql,
+        allowed_service_endpoints=policy.allowed_service_endpoints,
+    )
+    inferred = infer_query_type(tokens)
     if inferred != inp.expected_query_type:
         raise PermissionError(
             f"expected_query_type={inp.expected_query_type!r} does not match "
             f"the actual query form ({inferred!r})"
         )
+
     timeout_ms = inp.timeout_ms or policy.timeout_ms
-    max_rows = min(inp.max_rows or policy.default_limit, policy.max_limit)
+    effective_max_rows = min(inp.max_rows or policy.default_limit, policy.max_limit)
+
+    if inferred in ("select", "construct"):
+        top_limit = find_top_level_limit(tokens)
+        if top_limit is None:
+            raise PermissionError(
+                "raw SELECT/CONSTRUCT queries must include an explicit "
+                f"top-level LIMIT no greater than {effective_max_rows}"
+            )
+        if top_limit > effective_max_rows:
+            raise PermissionError(
+                f"raw query top-level LIMIT {top_limit} exceeds the "
+                f"effective max_rows {effective_max_rows}"
+            )
+
     result = await endpoint.query(
         sparql,
         query_type=inferred,
         timeout_ms=timeout_ms,
-        max_rows=max_rows,
+        max_rows=effective_max_rows,
     )
     return RawSparqlOutput(result=result)
 
@@ -261,43 +370,26 @@ def _build_explanation(
     return "\n".join(lines)
 
 
-_UPDATE_KEYWORDS: tuple[str, ...] = (
-    "INSERT",
-    "DELETE",
-    "DROP",
-    "CLEAR",
-    "LOAD",
-    "CREATE",
-    "COPY",
-    "MOVE",
-    "ADD",
-)
-_FORBIDDEN_QUERY_FORMS: tuple[str, ...] = ("DESCRIBE",)
-_QUERY_FORM_KEYWORDS: tuple[str, ...] = ("SELECT", "ASK", "CONSTRUCT", "DESCRIBE")
+# --- Backwards-compatible shims for the previous string-preprocessing API.
+# The real safety logic now lives in ``graph_mcp.mcp_tools.sparql_scanner``.
 
 
 def _strip_sparql_comments_and_strings(sparql: str) -> str:
-    """Return SPARQL with string literals and comments replaced by spaces.
+    """Replace string literals and comments with spaces (legacy helper).
 
-    This is the prerequisite for any keyword-based safety check: substring
-    matches on the raw text would false-positive on ``"INSERT in a string"``
-    and false-negative on ``INSERT\\nDATA`` once whitespace is normalized.
-
-    The transformation preserves character positions (replaces with spaces)
-    so error messages can still point at the offending byte if we want.
+    Preserved for tests that imported it directly. The production path uses
+    :func:`graph_mcp.mcp_tools.sparql_scanner.tokenize` instead.
     """
     out: list[str] = []
     i = 0
     n = len(sparql)
     while i < n:
         c = sparql[i]
-        # Line comment: # to end-of-line.
         if c == "#":
             while i < n and sparql[i] != "\n":
                 out.append(" ")
                 i += 1
             continue
-        # Triple-quoted strings (rare in queries but legal).
         if sparql.startswith('"""', i) or sparql.startswith("'''", i):
             quote = sparql[i : i + 3]
             out.append("   ")
@@ -309,7 +401,6 @@ def _strip_sparql_comments_and_strings(sparql: str) -> str:
                 out.append("   ")
                 i += 3
             continue
-        # Single-line strings.
         if c in ('"', "'"):
             quote = c
             out.append(" ")
@@ -331,60 +422,19 @@ def _strip_sparql_comments_and_strings(sparql: str) -> str:
 
 
 def _infer_query_type(sparql: str) -> Literal["select", "ask", "construct"]:
-    """Determine the query form from the cleaned SPARQL text.
+    """Legacy wrapper around the scanner's ``infer_query_type``."""
+    from graph_mcp.mcp_tools.sparql_scanner import _ScannerError, tokenize
 
-    The first matching query keyword wins. ``DESCRIBE`` is forbidden — callers
-    invoke ``_reject_unsafe_raw`` before this for the safety verdict.
-    """
-    cleaned = _strip_sparql_comments_and_strings(sparql).upper()
-    positions: dict[str, int] = {}
-    for kw in _QUERY_FORM_KEYWORDS:
-        match = _re.search(rf"\b{kw}\b", cleaned)
-        if match:
-            positions[kw] = match.start()
-    if not positions:
-        raise PermissionError("could not determine SPARQL query form")
-    first = min(positions, key=lambda k: positions[k])
-    if first == "DESCRIBE":
-        raise PermissionError("DESCRIBE is not supported in raw mode")
-    return first.lower()  # type: ignore[return-value]
+    try:
+        tokens = tokenize(sparql)
+    except _ScannerError as exc:
+        raise PermissionError(f"could not tokenize raw SPARQL: {exc}") from exc
+    return infer_query_type(tokens)  # type: ignore[return-value]
 
 
 def _reject_unsafe_raw(sparql: str, policy: SecurityPolicy) -> None:
-    """Pre-flight safety check for raw SPARQL.
-
-    Strips comments and string literals, then word-boundary-matches the
-    forbidden update keywords. Verifies that any ``SERVICE`` references an
-    allowlisted endpoint.
-    """
-    cleaned = _strip_sparql_comments_and_strings(sparql)
-    upper = cleaned.upper()
-
-    for kw in _UPDATE_KEYWORDS:
-        if _re.search(rf"\b{kw}\b", upper):
-            raise PermissionError(f"forbidden SPARQL keyword in raw query: {kw}")
-    for kw in _FORBIDDEN_QUERY_FORMS:
-        if _re.search(rf"\b{kw}\b", upper):
-            raise PermissionError(f"unsupported query form: {kw}")
-
-    # Each SERVICE must point to an explicitly allowlisted endpoint.
-    for match in _re.finditer(r"\bSERVICE\s+(?:SILENT\s+)?<([^>\s]+)>", upper, _re.IGNORECASE):
-        # Use the original-cased text from the cleaned buffer for matching.
-        original = cleaned[match.start(1) : match.end(1)]
-        if not policy.is_service_allowed(original):
-            raise PermissionError(f"SERVICE endpoint not in allowlist: {original}")
-
-    # SERVICE with a variable endpoint is impossible to allowlist; reject it.
-    if _re.search(r"\bSERVICE\s+(?:SILENT\s+)?\?", upper, _re.IGNORECASE):
-        raise PermissionError("SERVICE with a variable endpoint is not permitted")
-
-    # Bare SERVICE with prefixed-name (e.g. SERVICE ex:foo) — also reject; the
-    # raw path does not resolve prefixes itself.
-    if _re.search(r"\bSERVICE\s+(?:SILENT\s+)?[A-Za-z_][A-Za-z0-9_\-]*:", upper, _re.IGNORECASE):
-        raise PermissionError(
-            "SERVICE with a prefixed-name endpoint is not permitted in raw mode; "
-            "use an absolute IRI"
-        )
+    """Legacy wrapper around the scanner's ``reject_unsafe_raw``."""
+    reject_unsafe_raw(sparql, allowed_service_endpoints=policy.allowed_service_endpoints)
 
 
 # --- Registration -----------------------------------------------------------

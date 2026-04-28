@@ -148,6 +148,8 @@ class QueryPlanValidator:
     # --- Public API -------------------------------------------------------
 
     def validate(self, plan: QueryPlan) -> ValidationResult:
+        from graph_mcp.models.literals import DEFAULT_PREFIXES
+
         ctx = _Ctx()
         # Build the prefix map and detect conflicts (same prefix → different IRI).
         ctx.prefixes = {}
@@ -158,6 +160,23 @@ class QueryPlanValidator:
                     "prefix_conflict",
                     f"prefix {p.prefix!r} declared twice with different IRIs: "
                     f"{existing!r} vs {p.iri!r}",
+                )
+            # Reject overriding well-known built-in prefixes unless policy permits.
+            builtin = DEFAULT_PREFIXES.get(p.prefix)
+            if (
+                builtin is not None
+                and builtin != p.iri
+                and not self.policy.allow_default_prefix_override
+            ):
+                ctx.error(
+                    "default_prefix_override",
+                    f"prefix {p.prefix!r} is a built-in pointing at {builtin!r}; "
+                    f"plan redefines it to {p.iri!r}",
+                    hint=(
+                        "Built-in prefixes (rdf, rdfs, xsd, owl, skos, dct, foaf) "
+                        "cannot be overridden by plans. Set "
+                        "GRAPH_MCP_ALLOW_DEFAULT_PREFIX_OVERRIDE=true to permit."
+                    ),
                 )
             ctx.prefixes[p.prefix] = p.iri
         outer = _Scope()
@@ -464,8 +483,22 @@ class QueryPlanValidator:
                         # UNDEF or a literal: cannot constrain to IRIs
                         bad = True
                         break
-                if not bad and iris:
-                    scope.values_constraints[v.name] = iris
+                if bad:
+                    # Any UNDEF, literal, or unresolved-prefix value means we
+                    # cannot prove the variable is restricted to IRIs at all.
+                    # Invalidate any prior constraint so a later GRAPH ?g
+                    # check is not falsely authorized.
+                    scope.values_constraints.pop(v.name, None)
+                elif iris:
+                    # Multiple VALUES on the same variable intersect.
+                    # SPARQL semantics: each VALUES clause restricts the
+                    # variable, so a later VALUES makes it the conjunction
+                    # (intersection) of the previous and the new value sets.
+                    existing = scope.values_constraints.get(v.name)
+                    if existing is None:
+                        scope.values_constraints[v.name] = iris
+                    else:
+                        scope.values_constraints[v.name] = existing & iris
         elif isinstance(p, GraphPattern):
             if isinstance(p.graph, (Iri, PrefixedName)):
                 iri = self._resolve_iri(p.graph, ctx)
@@ -477,20 +510,41 @@ class QueryPlanValidator:
             elif isinstance(p.graph, Var):
                 if self.policy.allowed_graphs:
                     # An allowlist is configured: only accept GRAPH ?g when a
-                    # prior VALUES has constrained ?g to allowlisted IRIs.
+                    # prior VALUES *in the same required group scope* has
+                    # constrained ?g to allowlisted IRIs.
+                    #
+                    # Order rule: VALUES must precede the GRAPH ?g block in
+                    # the same required group; the validator walks group
+                    # children in order, so a later VALUES does not
+                    # retroactively authorize an earlier GRAPH.
+                    #
+                    # Constraints from inside OPTIONAL / UNION / MINUS /
+                    # FILTER EXISTS / subqueries do NOT propagate to the
+                    # outer scope (see ``_Scope.merge_optional`` and
+                    # ``merge_union``).
                     constraint = scope.values_constraints.get(p.graph.name)
-                    if not constraint:
+                    if constraint is None:
                         ctx.error(
                             "graph_variable_not_allowed",
                             (
                                 f"GRAPH ?{p.graph.name} is not permitted with a "
-                                "named-graph allowlist; bind ?{name} via VALUES "
-                                "to allowlisted IRIs first."
+                                "named-graph allowlist; bind ?{name} via a "
+                                "preceding VALUES in the same required group "
+                                "scope first."
                             ).replace("{name}", p.graph.name),
                             hint=(
                                 "Restrict ?{name} with a VALUES pattern that "
-                                "lists only allowlisted graph IRIs."
+                                "lists only allowlisted graph IRIs and place "
+                                "it before the GRAPH ?{name} block."
                             ).replace("{name}", p.graph.name),
+                        )
+                    elif not constraint:
+                        ctx.error(
+                            "graph_values_constraint_empty",
+                            f"GRAPH ?{p.graph.name} is restricted by VALUES "
+                            "intersection to an empty set; query will produce "
+                            "no rows. Either fix the VALUES clauses or remove "
+                            "this GRAPH block.",
                         )
                     else:
                         forbidden = [g for g in constraint if not self.policy.is_graph_allowed(g)]
@@ -556,6 +610,46 @@ class QueryPlanValidator:
                 hint="Set GRAPH_MCP_ALLOW_UNBOUNDED_PATHS=true to permit, "
                 "or rewrite to a bounded form.",
             )
+        # Resolve every predicate IRI inside the path. This catches unknown
+        # prefixes and (when configured) enforces the path-predicate allowlist.
+        for term_iri in self._iter_path_predicates(path, ctx):
+            if not self.policy.is_path_predicate_allowed(term_iri):
+                ctx.error(
+                    "path_predicate_not_allowed",
+                    f"property path uses predicate {term_iri!r} which is not "
+                    "in the path-predicate allowlist",
+                    hint=(
+                        "Add it to GRAPH_MCP_ALLOWED_PATH_PREDICATES, or rewrite "
+                        "the query to use an allowlisted predicate."
+                    ),
+                )
+
+    def _iter_path_predicates(self, path: PropertyPath, ctx: _Ctx) -> list[str]:
+        """Yield resolved IRIs for every PropertyPathTerm inside ``path``.
+
+        Resolves PrefixedName references against ``ctx.prefixes`` and emits
+        an ``unknown_prefix`` error for any that are unresolved. Returns the
+        list of resolved IRIs (excluding any whose prefix could not resolve).
+        """
+        out: list[str] = []
+        if isinstance(path, PropertyPathTerm):
+            iri = self._resolve_iri(path.iri, ctx)
+            if iri is not None:
+                out.append(iri)
+        elif isinstance(
+            path,
+            (
+                PropertyPathInverse,
+                PropertyPathZeroOrMore,
+                PropertyPathOneOrMore,
+                PropertyPathZeroOrOne,
+            ),
+        ):
+            out.extend(self._iter_path_predicates(path.operand, ctx))
+        elif isinstance(path, (PropertyPathSeq, PropertyPathAlt)):
+            for e in path.elements:
+                out.extend(self._iter_path_predicates(e, ctx))
+        return out
 
     def _path_complexity(self, path: PropertyPath) -> int:
         if isinstance(path, PropertyPathTerm):

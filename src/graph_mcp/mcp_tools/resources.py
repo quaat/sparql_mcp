@@ -36,6 +36,30 @@ def schema_individuals_json(schema: SchemaProvider) -> str:
     return json.dumps([i.model_dump() for i in snap.individuals], indent=2)
 
 
+def schema_status_json(
+    schema: SchemaProvider,
+    *,
+    provider_name: str,
+    cache_ttl_seconds: float,
+) -> str:
+    """Return the schema-status payload for ``graph://schema/status``."""
+    snap = schema.snapshot()
+    diagnostics = [f"{d.section}: {d.error}" for d in snap.diagnostics]
+    return json.dumps(
+        {
+            "provider": provider_name,
+            "last_refresh_at": snap.last_refresh_at,
+            "cache_ttl_seconds": cache_ttl_seconds,
+            "classes_count": len(snap.classes),
+            "properties_count": len(snap.properties),
+            "individuals_count": len(snap.individuals),
+            "named_graphs_count": len(snap.named_graphs),
+            "diagnostics": diagnostics,
+        },
+        indent=2,
+    )
+
+
 def schema_examples_json(schema: SchemaProvider) -> str:
     snap = schema.snapshot()
     return json.dumps([e.model_dump() for e in snap.examples], indent=2)

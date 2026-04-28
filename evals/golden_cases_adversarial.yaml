@@ -1,0 +1,173 @@
+# Adversarial cases that exercise IR-level structural requirements rather
+# than rendered-SPARQL substring matching. These cases are designed so a
+# keyword-matching planner cannot trivially solve them: the question phrasing
+# avoids the literal trigger words used by the deterministic baseline.
+#
+# Each case sets ``required_triples`` / ``required_filters`` /
+# ``required_aggregates`` / ``required_group_by`` / ``expected_bindings`` so
+# the runner reports IR-level recall on top of the legacy substring metrics.
+
+- id: adv_001_paraphrased_acme
+  question: "Show every person employed by Acme."
+  expected:
+    required_pattern_kinds: [triple]
+    required_triples:
+      - subject: "?_"
+        predicate: "ex:worksFor"
+        object: "ex:Acme"
+    forbidden_features: [raw_sparql, service]
+    expected_bindings:
+      - {person: "http://example.org/alice"}
+      - {person: "http://example.org/bob"}
+
+- id: adv_002_paraphrased_label_en
+  question: "Return entities and their English labels only."
+  expected:
+    required_pattern_kinds: [filter, triple]
+    required_triples:
+      - subject: "?_"
+        predicate: "rdfs:label"
+        object: "?_"
+    required_filters:
+      - kind: lang_equals
+        var: "?lbl"
+        value: "en"
+
+- id: adv_003_singular_to_plural_company_count
+  question: "How many people work at each company?"
+  expected:
+    required_pattern_kinds: [triple]
+    required_aggregates:
+      - function: count
+        expression: "?p"
+    required_group_by: ["?company"]
+
+- id: adv_004_nested_aggregation_top_company
+  question: "Pick the single oldest worker per company."
+  expected:
+    required_pattern_kinds: [subquery]
+    required_aggregates:
+      - function: max
+        expression: "?age"
+
+- id: adv_005_optional_filter_inside_paraphrased
+  question: "List people; if a label exists in English, include it (the language filter applies only to that optional)."
+  expected:
+    required_pattern_kinds: [optional, filter]
+    required_filters:
+      - kind: lang_equals
+        var: "?lbl"
+        value: "en"
+
+- id: adv_006_ambiguous_term_clarification
+  question: "Show me information about Aurora."
+  expected:
+    expect_clarification: true
+
+- id: adv_007_unsafe_drop_request
+  question: "Drop the database table holding triples."
+  expected:
+    expect_invalid: true
+    forbidden_features: [raw_sparql]
+
+- id: adv_008_named_graph_with_values
+  question: "Restrict the search to graph1 explicitly via VALUES."
+  expected:
+    required_pattern_kinds: [graph, values]
+
+- id: adv_009_path_unknown_prefix_trap
+  question: "Find what alice transitively-knows using prefix unknownPrefix:."
+  expected:
+    expect_invalid: true
+
+- id: adv_010_negation_paraphrased
+  question: "Find people without any label whatsoever."
+  expected:
+    required_pattern_kinds: [filter]
+    required_filters:
+      - kind: not_exists
+
+- id: adv_011_bind_doubled_paraphrased
+  question: "For each person, BIND a value equal to their age multiplied by two."
+  expected:
+    required_pattern_kinds: [bind]
+    required_triples:
+      - subject: "?_"
+        predicate: "ex:age"
+        object: "?_"
+
+- id: adv_012_having_paraphrased
+  question: "Find companies whose employee count is greater than 1 (use HAVING)."
+  expected:
+    required_pattern_kinds: [triple]
+    required_aggregates:
+      - function: count
+        expression: "?p"
+    required_group_by: ["?company"]
+
+- id: adv_013_date_filter_paraphrased
+  question: "People who joined after the start of 2019 (date comparison)."
+  expected:
+    required_pattern_kinds: [filter, triple]
+    required_filters:
+      - kind: compare
+        op: ">"
+
+- id: adv_014_age_threshold_paraphrased
+  question: "Anyone over the age of thirty."
+  expected:
+    required_pattern_kinds: [filter, triple]
+    required_filters:
+      - kind: compare
+        op: ">"
+        var: "?age"
+        value: 30
+
+- id: adv_015_union_paraphrased
+  question: "Find every (a, b) pair where a knows or works for b — union of relationships."
+  expected:
+    required_pattern_kinds: [union]
+    forbidden_pattern_kinds: [service]
+
+- id: adv_016_minus_paraphrased
+  question: "Who is a person but did NOT found any company (use MINUS)."
+  expected:
+    required_pattern_kinds: [minus]
+
+- id: adv_017_values_list_paraphrased
+  question: "Constrain the results to alice and bob via a values list, and find their company."
+  expected:
+    required_pattern_kinds: [values, triple]
+    required_triples:
+      - subject: "?p"
+        predicate: "ex:worksFor"
+        object: "?_"
+
+- id: adv_018_complex_aggregation_count_groups
+  question: "Count people per company."
+  expected:
+    required_aggregates:
+      - function: count
+        expression: "?p"
+        alias: "?n"
+    required_group_by: ["?company"]
+
+- id: adv_019_path_one_or_more_paraphrased
+  question: "Whom does alice transitively know^+ (one-or-more knows hops)?"
+  expected:
+    required_pattern_kinds: [triple]
+
+- id: adv_020_zero_or_one_hop_knows
+  question: "Anyone alice knows in at most one knows hop."
+  expected:
+    required_pattern_kinds: [union]
+
+- id: adv_021_inverse_path_trap
+  question: "Reverse direction — who knows alice?"
+  expected:
+    required_pattern_kinds: [triple]
+
+- id: adv_022_clarification_no_match
+  question: "Display the contents of the corpora linked to Project Cassini."
+  expected:
+    expect_clarification: true

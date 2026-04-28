@@ -11,6 +11,28 @@ def compute_metrics(results: Iterable[CaseResult]) -> dict[str, float]:
     results = list(results)
     n = max(1, len(results))
 
+    # IR-level structural sums.
+    triple_total = sum(r.triple_total for r in results)
+    triple_present = sum(r.triple_present for r in results)
+    filter_total = sum(r.filter_total for r in results)
+    filter_present = sum(r.filter_present for r in results)
+    agg_total = sum(r.aggregate_total for r in results)
+    agg_present = sum(r.aggregate_present for r in results)
+    gb_total = sum(r.group_by_total for r in results)
+    gb_present = sum(r.group_by_present for r in results)
+    ob_total = sum(r.order_by_total for r in results)
+    ob_present = sum(r.order_by_present for r in results)
+    eb_total = sum(r.expected_bindings_total for r in results)
+    eb_present = sum(r.expected_bindings_present for r in results)
+    fpk_total = sum(r.forbidden_pattern_kinds_total for r in results)
+    fpk_violated = sum(r.forbidden_pattern_kinds_violated for r in results)
+
+    # Special-case sums.
+    clarif_cases = [r for r in results if r.is_clarification_case]
+    clarif_correct = sum(1 for r in clarif_cases if r.clarification_correct)
+    unsafe_cases = [r for r in results if r.is_unsafe_request_case]
+    unsafe_rejected = sum(1 for r in unsafe_cases if r.unsafe_request_rejected)
+
     plan_generated = sum(1 for r in results if r.plan_generated)
     plan_valid = sum(1 for r in results if r.plan_valid)
     rendered = sum(1 for r in results if r.rendered_sparql is not None)
@@ -55,6 +77,19 @@ def compute_metrics(results: Iterable[CaseResult]) -> dict[str, float]:
         # Repair
         "repair_attempted_rate": repair_attempted / n,
         "repair_success_rate": ((repair_succeeded / repair_attempted) if repair_attempted else 0.0),
+        # IR-level recall metrics (deeper than required_feature_recall).
+        "triple_pattern_recall": (triple_present / triple_total) if triple_total else 1.0,
+        "filter_semantics_recall": (filter_present / filter_total) if filter_total else 1.0,
+        "aggregate_semantics_recall": (agg_present / agg_total) if agg_total else 1.0,
+        "grouping_semantics_recall": (
+            ((gb_present + ob_present) / (gb_total + ob_total)) if (gb_total + ob_total) else 1.0
+        ),
+        "result_binding_accuracy": (eb_present / eb_total) if eb_total else 1.0,
+        "forbidden_pattern_violation_rate": ((fpk_violated / fpk_total) if fpk_total else 0.0),
+        "clarification_accuracy": ((clarif_correct / len(clarif_cases)) if clarif_cases else 1.0),
+        "unsafe_request_rejection_accuracy": (
+            (unsafe_rejected / len(unsafe_cases)) if unsafe_cases else 1.0
+        ),
         # Totals
         "total_cases": float(n),
     }

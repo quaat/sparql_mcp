@@ -8,6 +8,7 @@ it does not call any LLM. The PydanticAI planner is opt-in and requires the
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -653,6 +654,113 @@ class DeterministicPlanner:
         )
 
 
+# --- Planner deps + diagnostics + repair workflow ---------------------------
+
+
+@dataclass
+class PlannerDeps:
+    """Context object passed to the LLM-backed planner workflow.
+
+    Holds everything the workflow needs to produce, validate, and render a
+    plan without reaching for module globals. Tests can build a fake
+    :class:`PlannerDeps` and exercise the workflow with a stub agent.
+    """
+
+    schema: SchemaProvider
+    resolver: TermResolver
+    validator: QueryPlanValidator
+    renderer: object  # SparqlRenderer; importing here would create a cycle.
+    policy: object  # SecurityPolicy; same reason.
+    max_repair_attempts: int = 2
+
+
+class PlannerDiagnostics:
+    """Mutable diagnostics collector for one ``plan(question)`` call."""
+
+    def __init__(self) -> None:
+        from graph_mcp.models import ValidationIssue  # local import to keep cycles small
+
+        self._ValidationIssue = ValidationIssue
+        self.repair_attempts: int = 0
+        self.validation_errors_seen: list[ValidationIssue] = []
+        self.final_validation_ok: bool = False
+        self.rendered_sparql: str | None = None
+
+    def model_dump(self) -> dict[str, Any]:
+        return {
+            "repair_attempts": self.repair_attempts,
+            "validation_errors_seen": [e.model_dump() for e in self.validation_errors_seen],
+            "final_validation_ok": self.final_validation_ok,
+            "rendered_sparql": self.rendered_sparql,
+        }
+
+
+def run_planner_workflow(
+    deps: PlannerDeps,
+    question: str,
+    *,
+    generate: Callable[[str], PlanGenerationOutput],
+    diagnostics: PlannerDiagnostics | None = None,
+) -> tuple[PlanGenerationOutput, PlannerDiagnostics]:
+    """Run the generate → validate → repair loop and return the final output.
+
+    Workflow:
+
+    1. Generate an initial plan.
+    2. If the planner asks for clarification, return immediately.
+    3. Validate; if it passes, render and return.
+    4. Otherwise, run up to ``deps.max_repair_attempts`` repair iterations:
+       feed the validator's structured errors back to the agent and ask
+       for a corrected plan. Each repair attempt counts toward
+       ``diagnostics.repair_attempts``.
+    """
+    diag = diagnostics or PlannerDiagnostics()
+    output = generate(question)
+
+    # Clarification short-circuit.
+    if output.needs_clarification:
+        diag.final_validation_ok = False
+        return output, diag
+
+    def _try_render() -> bool:
+        try:
+            rendered = deps.renderer.render(output.plan)  # type: ignore[attr-defined]
+            diag.rendered_sparql = rendered.sparql
+        except Exception:  # pragma: no cover - render shouldn't fail on valid plan
+            diag.rendered_sparql = None
+        return True
+
+    # Initial validation.
+    result = deps.validator.validate(output.plan)
+    if result.ok:
+        diag.final_validation_ok = True
+        _try_render()
+        return output, diag
+    diag.validation_errors_seen.extend(result.errors)
+
+    # Repair iterations.
+    for repair in range(deps.max_repair_attempts):
+        diag.repair_attempts = repair + 1
+        feedback = (
+            "Your previous plan failed validation with these errors:\n"
+            + "\n".join(f"- {e.code}: {e.message}" for e in result.errors)
+            + "\n\nProduce a corrected PlanGenerationOutput."
+        )
+        output = generate(question + "\n\n" + feedback)
+        if output.needs_clarification:
+            diag.final_validation_ok = False
+            return output, diag
+        result = deps.validator.validate(output.plan)
+        if result.ok:
+            diag.final_validation_ok = True
+            _try_render()
+            return output, diag
+        diag.validation_errors_seen.extend(result.errors)
+
+    diag.final_validation_ok = False
+    return output, diag
+
+
 # --- PydanticAI planner (optional) -----------------------------------------
 
 
@@ -735,6 +843,38 @@ def _build_full_system_prompt(cfg: PydanticAIPlannerConfig) -> str:
     )
 
 
+def build_planner_from_callable(
+    deps: PlannerDeps,
+    generate: Callable[[str], PlanGenerationOutput],
+) -> Planner:
+    """Build a :class:`Planner` from any plan-generating callable.
+
+    This is the main extension point: pass any function that returns a
+    :class:`PlanGenerationOutput` for a given question and the workflow
+    handles validation + repair + diagnostics. Production code uses the
+    PydanticAI agent; tests use stub callables.
+    """
+
+    class _WorkflowPlanner:
+        def __init__(self) -> None:
+            self.last_repair_attempted: bool = False
+            self.last_repair_succeeded: bool = False
+            self.last_diagnostics: PlannerDiagnostics | None = None
+
+        def plan(
+            self, question: str, *, resolver: TermResolver | None = None
+        ) -> PlanGenerationOutput:
+            self.last_repair_attempted = False
+            self.last_repair_succeeded = False
+            output, diag = run_planner_workflow(deps, question, generate=generate)
+            self.last_repair_attempted = diag.repair_attempts > 0
+            self.last_repair_succeeded = diag.final_validation_ok and self.last_repair_attempted
+            self.last_diagnostics = diag
+            return output
+
+    return _WorkflowPlanner()
+
+
 def build_pydantic_ai_planner(
     model: str,
     *,
@@ -742,13 +882,11 @@ def build_pydantic_ai_planner(
     examples: list[dict[str, Any]] | None = None,
     max_repair_attempts: int = 2,
     validator: QueryPlanValidator | None = None,
+    renderer: object | None = None,
+    policy: object | None = None,
+    resolver: TermResolver | None = None,
 ) -> Planner:
-    """Construct a PydanticAI-backed planner with schema context + repair loop.
-
-    The agent is given the available schema, the QueryPlan IR JSON schema, and
-    optional plan examples in its system prompt. After each generation, the
-    plan is validated; if validation fails, structured errors are fed back to
-    the LLM for up to ``max_repair_attempts`` iterations.
+    """Construct a PydanticAI-backed planner.
 
     Imports are deferred so that the optional ``pydantic-ai`` dependency does
     not block test execution.
@@ -770,35 +908,40 @@ def build_pydantic_ai_planner(
     system = _build_full_system_prompt(cfg)
     agent: Any = Agent(model=model, output_type=PlanGenerationOutput, system_prompt=system)
 
-    class _LLMPlanner:
-        def __init__(self) -> None:
-            self.last_repair_attempted: bool = False
-            self.last_repair_succeeded: bool = False
+    if validator is None or renderer is None or policy is None or resolver is None:
+        # Backwards-compatible degraded mode: no workflow, no diagnostics.
+        class _LegacyLLMPlanner:
+            def __init__(self) -> None:
+                self.last_repair_attempted: bool = False
+                self.last_repair_succeeded: bool = False
 
-        def plan(
-            self, question: str, *, resolver: TermResolver | None = None
-        ) -> PlanGenerationOutput:
-            self.last_repair_attempted = False
-            self.last_repair_succeeded = False
-            output: PlanGenerationOutput = agent.run_sync(question).output
+            def plan(
+                self, question: str, *, resolver: TermResolver | None = None
+            ) -> PlanGenerationOutput:
+                return agent.run_sync(question).output  # type: ignore[no-any-return]
 
-            if validator is None:
-                return output
+        return _LegacyLLMPlanner()
 
-            for attempt in range(cfg.max_repair_attempts):
-                result = validator.validate(output.plan)
-                if result.ok:
-                    if attempt > 0:
-                        self.last_repair_succeeded = True
-                    return output
-                self.last_repair_attempted = True
-                feedback = (
-                    "Your previous plan failed validation with these errors:\n"
-                    + "\n".join(f"- {e.code}: {e.message}" for e in result.errors)
-                    + "\n\nProduce a corrected PlanGenerationOutput."
-                )
-                output = agent.run_sync(question + "\n\n" + feedback).output
+    deps = PlannerDeps(
+        schema=schema if schema is not None else _ImmutableStaticProvider(snap),
+        resolver=resolver,
+        validator=validator,
+        renderer=renderer,
+        policy=policy,
+        max_repair_attempts=max_repair_attempts,
+    )
 
-            return output
+    def generate(prompt_text: str) -> PlanGenerationOutput:
+        return agent.run_sync(prompt_text).output  # type: ignore[no-any-return]
 
-    return _LLMPlanner()
+    return build_planner_from_callable(deps, generate)
+
+
+class _ImmutableStaticProvider:
+    """Tiny provider wrapper used when only a snapshot is available."""
+
+    def __init__(self, snapshot: SchemaSnapshot) -> None:
+        self._snapshot = snapshot
+
+    def snapshot(self) -> SchemaSnapshot:
+        return self._snapshot

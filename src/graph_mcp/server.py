@@ -5,12 +5,14 @@ from __future__ import annotations
 import argparse
 from typing import TYPE_CHECKING
 
-from graph_mcp.compiler import QueryPlanValidator, RenderedQuery, SparqlRenderer
+from graph_mcp.compiler import QueryPlanValidator, SparqlRenderer
 from graph_mcp.config import Settings, load_settings
 from graph_mcp.graph import (
     GraphEndpoint,
     HttpSparqlEndpoint,
     LocalRdflibEndpoint,
+    SparqlDiscoveryConfig,
+    SparqlSchemaProvider,
     StaticSchemaProvider,
     TermResolver,
 )
@@ -22,8 +24,11 @@ from graph_mcp.mcp_tools import (
     QueryGraphInput,
     QueryGraphOutput,
     RawSparqlInput,
+    RefreshSchemaInput,
     RenderSparqlInput,
+    RenderSparqlOutput,
     ResolveTermsInput,
+    SchemaRefreshResult,
     ValidateQueryPlanInput,
 )
 from graph_mcp.mcp_tools.prompts import BUILD_QUERY_PLAN_PROMPT
@@ -36,6 +41,7 @@ from graph_mcp.mcp_tools.resources import (
     schema_named_graphs_json,
     schema_prefixes_json,
     schema_properties_json,
+    schema_status_json,
 )
 from graph_mcp.mcp_tools.tools import (
     RawSparqlOutput,
@@ -65,9 +71,35 @@ def build_endpoint(settings: Settings) -> GraphEndpoint:
     return LocalRdflibEndpoint()
 
 
-def build_schema_provider(_settings: Settings) -> SchemaProvider:
-    """Default schema provider is empty; downstream code may inject a richer one."""
-    return StaticSchemaProvider(SchemaSnapshot())
+def build_schema_provider(settings: Settings, endpoint: GraphEndpoint) -> SchemaProvider:
+    """Construct a :class:`SchemaProvider` per the configured mode.
+
+    - ``static``: an empty :class:`StaticSchemaProvider`.
+    - ``sparql``: a :class:`SparqlSchemaProvider` against the supplied endpoint.
+    - ``auto`` (default): use ``SparqlSchemaProvider`` when an endpoint URL or
+      a local graph file is configured; otherwise fall back to static.
+    """
+    from graph_mcp.models.literals import DEFAULT_PREFIXES
+
+    mode = settings.schema_provider
+    if mode == "static":
+        return StaticSchemaProvider(SchemaSnapshot())
+    if mode == "auto":
+        has_real_endpoint = (
+            settings.endpoint_url is not None or settings.local_graph_file is not None
+        )
+        if not has_real_endpoint:
+            return StaticSchemaProvider(SchemaSnapshot())
+    cfg = SparqlDiscoveryConfig(
+        timeout_ms=settings.schema_discovery_timeout_ms,
+        max_classes=settings.schema_max_classes,
+        max_properties=settings.schema_max_properties,
+        max_individuals=settings.schema_max_individuals,
+        max_named_graphs=settings.schema_max_named_graphs,
+        cache_ttl_seconds=settings.schema_cache_ttl_seconds,
+        base_prefixes=dict(DEFAULT_PREFIXES),
+    )
+    return SparqlSchemaProvider(endpoint, config=cfg)
 
 
 def build_server(
@@ -83,8 +115,11 @@ def build_server(
     validator = QueryPlanValidator(policy)
     renderer = SparqlRenderer(policy)
     endpoint = endpoint or build_endpoint(settings)
-    schema = schema or build_schema_provider(settings)
+    schema = schema or build_schema_provider(settings, endpoint)
     resolver = TermResolver(schema)
+
+    # Determine the provider name for status reporting (without inspecting types).
+    provider_name = "sparql" if isinstance(schema, SparqlSchemaProvider) else "static"
 
     mcp = FastMCP("graph-mcp")
 
@@ -118,6 +153,15 @@ def build_server(
         """
         return schema_individuals_json(schema)
 
+    @mcp.resource("graph://schema/status")
+    def res_status() -> str:
+        """Schema-discovery status: provider, last refresh, counts, diagnostics."""
+        return schema_status_json(
+            schema,
+            provider_name=provider_name,
+            cache_ttl_seconds=settings.schema_cache_ttl_seconds,
+        )
+
     @mcp.resource("graph://schema/examples")
     def res_examples() -> str:
         """Example QueryPlan objects keyed to common questions."""
@@ -146,8 +190,12 @@ def build_server(
         return tool_validate_query_plan(input, validator)
 
     @mcp.tool()
-    def render_sparql(input: RenderSparqlInput) -> RenderedQuery:
-        """Render a validated QueryPlan to canonical SPARQL."""
+    def render_sparql(input: RenderSparqlInput) -> RenderSparqlOutput:
+        """Validate, then render a QueryPlan to canonical SPARQL.
+
+        On validation failure, ``rendered`` is ``None`` and ``validation``
+        carries the structured errors.
+        """
         return tool_render_sparql(input, validator, renderer)
 
     @mcp.tool()
@@ -160,6 +208,36 @@ def build_server(
     def explain_query_plan(input: ExplainQueryPlanInput) -> object:
         """Produce a human-readable explanation of the plan's structure."""
         return tool_explain_query_plan(input, validator)
+
+    @mcp.tool()
+    async def refresh_schema(input: RefreshSchemaInput) -> SchemaRefreshResult:
+        """Refresh the schema cache. ``force=True`` bypasses the TTL."""
+        if not isinstance(schema, SparqlSchemaProvider):
+            snap = schema.snapshot()
+            return SchemaRefreshResult(
+                provider="static",
+                refreshed=False,
+                last_refresh_at=snap.last_refresh_at,
+                classes_count=len(snap.classes),
+                properties_count=len(snap.properties),
+                individuals_count=len(snap.individuals),
+                named_graphs_count=len(snap.named_graphs),
+                diagnostics=[f"{d.section}: {d.error}" for d in snap.diagnostics],
+            )
+        if input.force:
+            snap = await schema.refresh_force()
+        else:
+            snap = await schema.refresh()
+        return SchemaRefreshResult(
+            provider="sparql",
+            refreshed=True,
+            last_refresh_at=snap.last_refresh_at,
+            classes_count=len(snap.classes),
+            properties_count=len(snap.properties),
+            individuals_count=len(snap.individuals),
+            named_graphs_count=len(snap.named_graphs),
+            diagnostics=[f"{d.section}: {d.error}" for d in snap.diagnostics],
+        )
 
     if policy.enable_raw_sparql:
 
@@ -180,6 +258,8 @@ def build_server(
 
 
 def main() -> None:
+    import asyncio
+
     parser = argparse.ArgumentParser(prog="graph-mcp")
     parser.add_argument(
         "--transport",
@@ -192,7 +272,25 @@ def main() -> None:
     settings = load_settings()
     configure_logging(settings.log_level)
     log.info("starting graph-mcp", endpoint=settings.endpoint_url or "local:rdflib")
-    server = build_server(settings=settings)
+
+    endpoint = build_endpoint(settings)
+    schema = build_schema_provider(settings, endpoint)
+
+    if settings.schema_discovery_on_startup and isinstance(schema, SparqlSchemaProvider):
+        try:
+            asyncio.run(schema.refresh())
+            log.info(
+                "schema_discovery_complete",
+                classes=len(schema.snapshot().classes),
+                properties=len(schema.snapshot().properties),
+                individuals=len(schema.snapshot().individuals),
+                named_graphs=len(schema.snapshot().named_graphs),
+                diagnostics=len(schema.snapshot().diagnostics),
+            )
+        except Exception as exc:
+            log.warning("schema_discovery_startup_failed", error=str(exc))
+
+    server = build_server(settings=settings, endpoint=endpoint, schema=schema)
     server.run(transport=args.transport)
 
 

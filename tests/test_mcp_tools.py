@@ -74,9 +74,50 @@ def test_render_tool_returns_sparql(
     validator: QueryPlanValidator, renderer: SparqlRenderer
 ) -> None:
     out = tool_render_sparql(RenderSparqlInput(plan=_basic_plan()), validator, renderer)
-    assert out.query_type == "select"
-    assert out.sparql.startswith("PREFIX")
-    assert "ex:worksFor" in out.sparql
+    assert out.validation.ok
+    assert out.rendered is not None
+    assert out.rendered.query_type == "select"
+    assert out.rendered.sparql.startswith("PREFIX")
+    assert "ex:worksFor" in out.rendered.sparql
+
+
+def test_render_sparql_invalid_plan_returns_validation_not_empty_query(
+    validator: QueryPlanValidator, renderer: SparqlRenderer
+) -> None:
+    """An invalid plan must yield ``rendered=None``, not a fake empty SPARQL string."""
+    from graph_mcp.models import (
+        Prefix,
+        Projection,
+        SelectPlan,
+        TriplePattern,
+        Var,
+    )
+
+    # Project a variable that is never bound by the WHERE clause.
+    plan = SelectPlan(
+        prefixes=[Prefix(prefix="ex", iri="http://example.org/")],
+        projection=[Projection(var=Var(name="never_bound"))],
+        where=[
+            TriplePattern(
+                subject=Var(name="p"),
+                predicate=PrefixedName(prefix="ex", local="knows"),
+                object=Var(name="q"),
+            )
+        ],
+    )
+    out = tool_render_sparql(RenderSparqlInput(plan=plan), validator, renderer)
+    assert not out.validation.ok
+    assert out.rendered is None
+    assert any(i.code == "unbound_projection_var" for i in out.validation.errors)
+
+
+def test_render_sparql_valid_plan_returns_rendered_query(
+    validator: QueryPlanValidator, renderer: SparqlRenderer
+) -> None:
+    out = tool_render_sparql(RenderSparqlInput(plan=_basic_plan()), validator, renderer)
+    assert out.validation.ok
+    assert out.rendered is not None
+    assert out.rendered.sparql  # non-empty
 
 
 def test_resolve_terms_tool() -> None:

@@ -26,6 +26,8 @@ class SecurityPolicy:
     max_query_depth: int
     max_property_path_complexity: int
     allow_unbounded_paths: bool
+    allow_default_prefix_override: bool
+    allowed_path_predicates: frozenset[str]
 
     @classmethod
     def from_settings(cls, settings: Settings) -> SecurityPolicy:
@@ -40,6 +42,8 @@ class SecurityPolicy:
             max_query_depth=settings.max_query_depth,
             max_property_path_complexity=settings.max_property_path_complexity,
             allow_unbounded_paths=settings.allow_unbounded_paths,
+            allow_default_prefix_override=settings.allow_default_prefix_override,
+            allowed_path_predicates=frozenset(settings.allowed_path_predicates),
         )
 
     def is_graph_allowed(self, iri: str) -> bool:
@@ -49,3 +53,7 @@ class SecurityPolicy:
     def is_service_allowed(self, iri: str) -> bool:
         """SERVICE is allowed only if explicitly listed."""
         return iri in self.allowed_service_endpoints
+
+    def is_path_predicate_allowed(self, iri: str) -> bool:
+        """Property-path predicates pass when no allowlist is configured."""
+        return not self.allowed_path_predicates or iri in self.allowed_path_predicates
