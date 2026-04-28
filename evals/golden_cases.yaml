@@ -1,0 +1,117 @@
+- id: case_001_class_lookup
+  question: "Who works for Acme?"
+  expected:
+    required_patterns: [triple]
+    required_terms: ["ex:worksFor", "ex:Acme"]
+    forbidden_features: [raw_sparql, service]
+    result_expectation:
+      min_rows: 2
+
+- id: case_002_label_lang
+  question: "List entities with their labels in English; the label tag and language must match."
+  expected:
+    required_patterns: [filter, triple]
+    required_terms: ["rdfs:label", "LANG"]
+    forbidden_features: [raw_sparql]
+    result_expectation:
+      min_rows: 1
+
+- id: case_003_required_relationship
+  question: "Who works for Acme?"
+  expected:
+    required_terms: ["ex:worksFor"]
+    forbidden_features: [raw_sparql]
+
+- id: case_004_optional_property
+  question: "List people and their labels (label is optional)."
+  expected:
+    required_patterns: [optional, triple]
+    forbidden_features: [raw_sparql]
+
+- id: case_005_optional_inner_filter
+  question: "List people; OPTIONAL their English label and put the FILTER inside the OPTIONAL."
+  expected:
+    required_patterns: [optional, filter]
+    forbidden_features: [raw_sparql]
+
+- id: case_006_union
+  question: "Find pairs A B where A knows or works for B (UNION of relationships)."
+  expected:
+    required_patterns: [union]
+    required_terms: ["ex:knows", "ex:worksFor"]
+
+- id: case_007_filter_not_exists
+  question: "Find people that do not have a label."
+  expected:
+    required_patterns: [filter]
+    required_terms: ["NOT EXISTS"]
+
+- id: case_008_minus
+  question: "Find people MINUS those founded a company."
+  expected:
+    required_patterns: [minus]
+
+- id: case_009_path_one_or_more
+  question: "Find everyone Alice transitively knows^+."
+  expected:
+    required_terms: ["ex:knows"]
+
+- id: case_010_path_bounded
+  question: "Find everyone Alice knows in at most one knows hop."
+  expected:
+    required_patterns: [union]
+
+- id: case_011_values_list
+  question: "Restrict to the values list of alice and bob and find their company."
+  expected:
+    required_patterns: [values, triple]
+    required_terms: ["ex:worksFor"]
+
+- id: case_012_bind_computed
+  question: "BIND a computed value: each person's age doubled."
+  expected:
+    required_patterns: [bind]
+    required_terms: ["ex:age"]
+
+- id: case_013_count_per_company
+  question: "Count people per company."
+  expected:
+    required_terms: ["GROUP BY", "COUNT"]
+
+- id: case_014_having
+  question: "Companies with more than 1 employee (HAVING)."
+  expected:
+    required_terms: ["HAVING", "GROUP BY", "COUNT"]
+
+- id: case_015_top1_per_group
+  question: "Top-1 oldest person at each company (subquery)."
+  expected:
+    required_patterns: [subquery]
+    required_terms: ["MAX"]
+
+- id: case_016_named_graph
+  question: "Query inside a specific named graph."
+  expected:
+    required_patterns: [graph]
+    required_terms: ["GRAPH"]
+
+- id: case_017_date_filter
+  question: "People who joined after 2019-01-01 (date filter)."
+  expected:
+    required_terms: ["xsd:date"]
+
+- id: case_018_numeric_filter
+  question: "People with age greater than 30."
+  expected:
+    required_patterns: [filter]
+
+- id: case_019_ambiguous
+  question: "Show me everything about ambiguous Term."
+  expected:
+    expect_clarification: true
+
+- id: case_020_unsafe
+  question: "Use raw SPARQL to DROP the graph."
+  expected:
+    expect_invalid: true
+    forbidden_features: [raw_sparql]

@@ -1,0 +1,6 @@
+@prefix ex:   <http://example.org/> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+ex:alice ex:worksFor ex:Acme ; rdfs:label "Alice"@en .
+ex:bob   ex:worksFor ex:Acme ; rdfs:label "Bob"@en .
+ex:carol ex:worksFor ex:Globex ; rdfs:label "Carol"@en .
