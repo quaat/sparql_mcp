@@ -5,9 +5,18 @@ Thin wrapper around ``python -m evals_rag.runner --graph-source sparql``
 that pins the ocean-specific cases and writes a report under
 ``reports/ocean-fuseki-smoke``. Schema is discovered live from the
 endpoint; the planner uses :class:`evals_rag.retrieval.MockOntologyRetriever`
-over that snapshot plus the heuristic reranker. No LLM is required;
-without ``--azure`` / ``--model`` the deterministic baseline planner is
-used so the script can still be called as a CI smoke test.
+over that snapshot plus the heuristic reranker.
+
+This script **requires an LLM** by default because the deterministic
+baseline planner only knows the small ``ex:`` fixture vocabulary and
+cannot answer dcat / sosa / geo / prov questions. Pass ``--model``
+(or ``--azure`` plus the standard ``AZURE_OPENAI_*`` env vars) to enable
+real planning. To exercise just the connectivity / schema-discovery
+plumbing without an LLM, pass ``--allow-deterministic-plumbing-smoke`` —
+ocean cases are not expected to semantically pass in that mode.
+
+For raw SPARQL connectivity (no planner), use
+``scripts/run_ocean_fuseki_smoke.py`` instead.
 
 Pre-flight: refresh schema discovery and warn loudly when zero classes /
 properties are discovered, since that almost always means the Fuseki URL
@@ -50,32 +59,39 @@ def _build_auth() -> tuple[str, str] | None:
 
 
 async def _preflight(endpoint_url: str, auth: tuple[str, str] | None) -> int:
-    """Discover schema once and warn if it looks empty."""
+    """Discover schema once and warn if it looks empty.
+
+    The preflight builds and tears down its own endpoint inside this
+    function so the AsyncClient never outlives its event loop.
+    """
     components = await build_components(
         endpoint_url=endpoint_url,
         auth=auth,
         extra_prefixes=dict(OCEAN_KG_PREFIXES),
     )
-    snap = components.schema_provider.snapshot()
-    print(f"endpoint:    {_safe_endpoint_repr(endpoint_url)}")
-    print(f"auth:        {'configured' if auth else 'none'}")
-    print(f"classes:     {len(snap.classes)}")
-    print(f"properties:  {len(snap.properties)}")
-    print(f"individuals: {len(snap.individuals)}")
-    print(f"named graphs: {len(snap.named_graphs)}")
-    if snap.diagnostics:
-        print("schema discovery diagnostics:")
-        for d in snap.diagnostics:
-            print(f"  - {d.section}: {d.error}")
-    if not snap.classes and not snap.properties:
-        print(
-            "WARNING: schema discovery returned zero classes and zero properties.\n"
-            "         Check the endpoint URL, dataset name, and that the dataset\n"
-            "         is loaded with content (raw SPARQL `?s ?p ?o` should match).",
-            file=sys.stderr,
-        )
-        return 1
-    return 0
+    try:
+        snap = components.schema_provider.snapshot()
+        print(f"endpoint:    {_safe_endpoint_repr(endpoint_url)}")
+        print(f"auth:        {'configured' if auth else 'none'}")
+        print(f"classes:     {len(snap.classes)}")
+        print(f"properties:  {len(snap.properties)}")
+        print(f"individuals: {len(snap.individuals)}")
+        print(f"named graphs: {len(snap.named_graphs)}")
+        if snap.diagnostics:
+            print("schema discovery diagnostics:")
+            for d in snap.diagnostics:
+                print(f"  - {d.section}: {d.error}")
+        if not snap.classes and not snap.properties:
+            print(
+                "WARNING: schema discovery returned zero classes and zero properties.\n"
+                "         Check the endpoint URL, dataset name, and that the dataset\n"
+                "         is loaded with content (raw SPARQL `?s ?p ?o` should match).",
+                file=sys.stderr,
+            )
+            return 1
+        return 0
+    finally:
+        await components.endpoint.aclose()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -96,7 +112,35 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--azure", action="store_true", help="Use Azure OpenAI as the LLM backend.")
     parser.add_argument("--azure-endpoint", default=None)
     parser.add_argument("--model", default=None)
+    parser.add_argument(
+        "--allow-deterministic-plumbing-smoke",
+        action="store_true",
+        help=(
+            "Run with the deterministic baseline planner. The ocean cases will "
+            "fail the structural eval — this mode only verifies schema "
+            "discovery + plumbing. Use --model / --azure for real planning."
+        ),
+    )
     parsed = parser.parse_args(argv)
+
+    if not (parsed.azure or parsed.model or parsed.allow_deterministic_plumbing_smoke):
+        print(
+            "run_ocean_rag_smoke requires an LLM for free-text ocean planning.\n"
+            "  - For raw KG connectivity, run: scripts/run_ocean_fuseki_smoke.py\n"
+            "  - For free-text planning, pass --model or --azure (with the\n"
+            "    standard AZURE_OPENAI_* env vars).\n"
+            "  - To exercise plumbing only (cases will fail the structural eval),\n"
+            "    pass --allow-deterministic-plumbing-smoke.",
+            file=sys.stderr,
+        )
+        return 2
+    if parsed.allow_deterministic_plumbing_smoke and not (parsed.azure or parsed.model):
+        print(
+            "WARNING: deterministic-plumbing-smoke mode enabled. The ocean cases\n"
+            "         will not semantically pass; this mode only verifies the\n"
+            "         live SPARQL plumbing and schema discovery.",
+            file=sys.stderr,
+        )
 
     auth = _build_auth()
     rc = asyncio.run(_preflight(parsed.endpoint_url, auth))

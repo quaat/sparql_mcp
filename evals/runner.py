@@ -807,7 +807,18 @@ async def build_components(
     base_prefixes = dict(DEFAULT_PREFIXES)
     if extra_prefixes:
         base_prefixes.update(extra_prefixes)
-    discovery_config = SparqlDiscoveryConfig(base_prefixes=base_prefixes)
+    # Mirror the production server's schema-discovery configuration so the
+    # eval runs share its safety/timeout knobs. Without this the eval would
+    # silently use library defaults regardless of operator overrides.
+    discovery_config = SparqlDiscoveryConfig(
+        timeout_ms=settings.schema_discovery_timeout_ms,
+        max_classes=settings.schema_max_classes,
+        max_properties=settings.schema_max_properties,
+        max_individuals=settings.schema_max_individuals,
+        max_named_graphs=settings.schema_max_named_graphs,
+        cache_ttl_seconds=settings.schema_cache_ttl_seconds,
+        base_prefixes=base_prefixes,
+    )
     discovery = SparqlSchemaProvider(chosen_endpoint, discovery_config)
     snapshot = await discovery.refresh()
     schema_provider: SchemaProvider = StaticSchemaProvider(snapshot)
@@ -960,69 +971,81 @@ def main(argv: list[str] | None = None) -> int:
         help="Exit nonzero if any --min/--max threshold is missed.",
     )
     args = parser.parse_args(argv)
+    return asyncio.run(_main_async(args))
 
+
+async def _main_async(args: argparse.Namespace) -> int:
+    """Single-event-loop owner for one ``evals.runner`` invocation.
+
+    Keeps the endpoint and planner-component lifecycle inside one
+    ``asyncio.run`` call so a future remote endpoint here would not run
+    into the same closed-loop issue evals_rag did.
+    """
     cases = load_cases(args.cases)
 
-    components = asyncio.run(build_components(graph_path=Path(args.graph)))
-    planner = make_planner(
-        args.planner,
-        components,
-        model=args.model,
-        azure=args.azure,
-        azure_endpoint=args.azure_endpoint,
-        max_repair_attempts=args.max_repair_attempts,
-    )
+    components = await build_components(graph_path=Path(args.graph))
+    try:
+        planner = make_planner(
+            args.planner,
+            components,
+            model=args.model,
+            azure=args.azure,
+            azure_endpoint=args.azure_endpoint,
+            max_repair_attempts=args.max_repair_attempts,
+        )
 
-    report = asyncio.run(
-        run(
+        report = await run(
             cases,
             planner,
             components=components,
             execute=not args.no_execute,
             semantic_repair_attempts=args.semantic_repair_attempts,
         )
-    )
 
-    if args.report_dir:
-        out_dir = Path(args.report_dir)
-        out_dir.mkdir(parents=True, exist_ok=True)
-        (out_dir / "report.json").write_text(json.dumps(report.model_dump(), indent=2, default=str))
-        (out_dir / "report.md").write_text(render_markdown_report(report))
+        if args.report_dir:
+            out_dir = Path(args.report_dir)
+            out_dir.mkdir(parents=True, exist_ok=True)
+            (out_dir / "report.json").write_text(
+                json.dumps(report.model_dump(), indent=2, default=str)
+            )
+            (out_dir / "report.md").write_text(render_markdown_report(report))
 
-    print(json.dumps(report.metrics, indent=2))
+        print(json.dumps(report.metrics, indent=2))
 
-    # Threshold checks.
-    thresholds: list[ThresholdSpec] = []
-    if args.min_case_pass_rate is not None:
-        thresholds.append(ThresholdSpec("case_pass_rate", minimum=args.min_case_pass_rate))
-    if args.min_valid_plan_rate is not None:
-        thresholds.append(ThresholdSpec("valid_plan_rate", minimum=args.min_valid_plan_rate))
-    if args.min_render_success_rate is not None:
-        thresholds.append(
-            ThresholdSpec("render_success_rate", minimum=args.min_render_success_rate)
-        )
-    if args.min_execution_success_rate is not None:
-        thresholds.append(
-            ThresholdSpec("execution_success_rate", minimum=args.min_execution_success_rate)
-        )
-    if args.min_term_resolution_accuracy is not None:
-        thresholds.append(
-            ThresholdSpec("term_resolution_accuracy", minimum=args.min_term_resolution_accuracy)
-        )
-    if args.max_safety_violations is not None:
-        thresholds.append(
-            ThresholdSpec("safety_violation_count", maximum=args.max_safety_violations)
-        )
-    threshold_failures = _check_thresholds(report.metrics, thresholds)
-    if threshold_failures:
-        print("\nFailed thresholds:", file=sys.stderr)
-        for f in threshold_failures:
-            print(f"- {f}", file=sys.stderr)
+        # Threshold checks.
+        thresholds: list[ThresholdSpec] = []
+        if args.min_case_pass_rate is not None:
+            thresholds.append(ThresholdSpec("case_pass_rate", minimum=args.min_case_pass_rate))
+        if args.min_valid_plan_rate is not None:
+            thresholds.append(ThresholdSpec("valid_plan_rate", minimum=args.min_valid_plan_rate))
+        if args.min_render_success_rate is not None:
+            thresholds.append(
+                ThresholdSpec("render_success_rate", minimum=args.min_render_success_rate)
+            )
+        if args.min_execution_success_rate is not None:
+            thresholds.append(
+                ThresholdSpec("execution_success_rate", minimum=args.min_execution_success_rate)
+            )
+        if args.min_term_resolution_accuracy is not None:
+            thresholds.append(
+                ThresholdSpec("term_resolution_accuracy", minimum=args.min_term_resolution_accuracy)
+            )
+        if args.max_safety_violations is not None:
+            thresholds.append(
+                ThresholdSpec("safety_violation_count", maximum=args.max_safety_violations)
+            )
+        threshold_failures = _check_thresholds(report.metrics, thresholds)
+        if threshold_failures:
+            print("\nFailed thresholds:", file=sys.stderr)
+            for f in threshold_failures:
+                print(f"- {f}", file=sys.stderr)
 
-    case_failures = sum(1 for c in report.cases if c.failures)
-    if args.fail_below_threshold and threshold_failures:
-        return 2
-    return 0 if case_failures == 0 else 1
+        case_failures = sum(1 for c in report.cases if c.failures)
+        if args.fail_below_threshold and threshold_failures:
+            return 2
+        return 0 if case_failures == 0 else 1
+    finally:
+        await components.endpoint.aclose()
 
 
 if __name__ == "__main__":  # pragma: no cover

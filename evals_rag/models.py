@@ -18,7 +18,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 ConceptKind = Literal["class", "property", "individual", "graph", "datatype", "unknown"]
-RetrievalSource = Literal["qdrant", "mock", "hybrid"]
+RetrievalSource = Literal["qdrant", "mock", "hybrid", "vectorizer"]
 
 
 class OntologyConcept(BaseModel):

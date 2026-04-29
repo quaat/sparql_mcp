@@ -6,6 +6,12 @@ import argparse
 from typing import TYPE_CHECKING
 
 from graph_mcp.compiler import QueryPlanValidator, SparqlRenderer
+from graph_mcp.concept_retrieval import (
+    DiscoverOntologyConceptsInput,
+    DiscoverOntologyConceptsOutput,
+    MCPConceptRetrievalSettings,
+    tool_discover_ontology_concepts,
+)
 from graph_mcp.config import ConfigurationError, Settings, load_settings
 from graph_mcp.graph import (
     GraphEndpoint,
@@ -254,6 +260,28 @@ def build_server(
             """Expert-mode raw SPARQL execution. Read-only; gated by policy."""
             assert endpoint is not None
             return await tool_execute_sparql_raw(input, endpoint, policy)
+
+    concept_settings = MCPConceptRetrievalSettings()
+    if concept_settings.enabled:
+
+        @mcp.tool()
+        async def discover_ontology_concepts(
+            input: DiscoverOntologyConceptsInput,
+        ) -> DiscoverOntologyConceptsOutput:
+            """Discover ontology concepts via the ``ontology_vectorizer`` library.
+
+            Returns ranked concepts with score components and graph context
+            (parents/ancestors/group_ids). Retrieval logic — embeddings,
+            Qdrant queries, reranking, graph-aware scoring — lives entirely
+            in the vectorizer; this tool is only the MCP boundary.
+
+            Errors (vectorizer not installed, Qdrant unreachable, missing
+            credentials) are returned as a structured ``error`` field rather
+            than raised, so the host LLM can surface them gracefully.
+            """
+            return await tool_discover_ontology_concepts(
+                input, settings=concept_settings
+            )
 
     # ----- Prompts ----------------------------------------------------------
 

@@ -230,6 +230,118 @@ print(render.render(plan).sparql)
 # LIMIT 100
 ```
 
+## Ontology concept discovery (RAG)
+
+The `discover_ontology_concepts` MCP tool delegates **all** retrieval logic
+to the [`ontology_vectorizer`](../ontology_vectorizer) library. graph-mcp
+does not implement concept embedding, Qdrant queries, reranking, or
+graph-aware scoring directly — it only owns the MCP boundary.
+
+### Architecture
+
+```
+host LLM ──MCP──▶ graph-mcp.discover_ontology_concepts
+                          │
+                          ▼
+                 OntologyConceptRetriever  (ontology_vectorizer.api)
+                          │
+                ┌─────────┼─────────┬───────────────┐
+                ▼         ▼         ▼               ▼
+            embedding  Qdrant   reranking   graph-aware scoring
+              client   client    client     (parents / groups)
+```
+
+The MCP client never imports `ontology_vectorizer.qdrant_store`,
+`ontology_vectorizer.retrieval`, or any other internal module — only the
+public facade in `ontology_vectorizer.api`.
+
+### Install
+
+```bash
+# Editable side-by-side checkouts (typical dev setup):
+uv pip install -e ../ontology_vectorizer
+uv pip install -e ".[rag]"
+```
+
+Or, with uv's `[tool.uv.sources]` entry already in `pyproject.toml`,
+`uv sync --extra rag` will pick up the sibling checkout automatically.
+
+### Required environment
+
+The vectorizer reads its own variables (not prefixed with `GRAPH_MCP_`):
+
+| Variable | Purpose |
+| --- | --- |
+| `QDRANT_URL` | Qdrant base URL |
+| `QDRANT_API_KEY` | Qdrant API key (optional) |
+| `QDRANT_COLLECTION_NAME` | Collection holding ingested concepts |
+| `FOUNDRY_API_BASE_URL` | OpenAI-compatible / Foundry gateway URL |
+| `FOUNDRY_API_TOKEN` | Bearer token for the gateway |
+| `FOUNDRY_EMBEDDING_MODEL` | Embedding model name |
+| `FOUNDRY_RERANKER_MODEL` | Reranker model name (optional; falls back to local lexical) |
+| `FOUNDRY_LLM_MODEL` | LLM model used by enrichment (optional) |
+| `ONTOLOGY_VECTORIZER_DEFAULT_ONTOLOGY_ID` | Default ontology id |
+
+The MCP server has its own thin wrapper:
+
+| Variable | Purpose |
+| --- | --- |
+| `GRAPH_MCP_CONCEPTS_ENABLED` | Master switch (default `true`) |
+| `GRAPH_MCP_CONCEPTS_DEFAULT_ONTOLOGY_ID` | Used when a request omits `ontology_id` |
+| `GRAPH_MCP_CONCEPTS_DEFAULT_TOP_K` | Default `top_k` |
+| `GRAPH_MCP_CONCEPTS_INCLUDE_DEPRECATED_BY_DEFAULT` | Allow deprecated concepts even when the request doesn't ask for them |
+
+### Ingestion (run once per ontology)
+
+```bash
+# Populate the Qdrant collection that the MCP tool reads.
+ontology-vectorizer ingest --input ocean_demo.ttl --ontology-id ocean-demo
+```
+
+### Example MCP request / response
+
+Request:
+
+```json
+{
+  "query": "sea surface temperature",
+  "ontology_id": "ocean-demo",
+  "top_k": 5,
+  "kind_filter": ["skos_concept"]
+}
+```
+
+Response:
+
+```json
+{
+  "query": "sea surface temperature",
+  "ontology_id": "ocean-demo",
+  "retrieval_strategy": "hybrid_multi_stage_graph_aware",
+  "results": [
+    {
+      "concept_id": "...",
+      "iri": "https://example.org/ocean-demo/id/observable-property/sst",
+      "compact_id": "var:sst",
+      "preferred_label": "sea surface temperature",
+      "labels": ["sea surface temperature"],
+      "alt_labels": ["SST"],
+      "kind": "skos_concept",
+      "definition": "Temperature at the ocean surface.",
+      "score": 0.94,
+      "deprecated": false,
+      "parents": ["var:temperature"],
+      "group_ids": ["..."],
+      "explanation": "exact-label match"
+    }
+  ]
+}
+```
+
+Errors (vectorizer not installed, Qdrant unreachable, missing credentials)
+are returned as `{"error": "..."}` rather than raised, so a host LLM can
+surface them gracefully.
+
 ## Tools, resources, prompts
 
 | MCP tool | Purpose |
@@ -240,6 +352,7 @@ print(render.render(plan).sparql)
 | `query_graph` | Validate → render → execute (or `dry_run=true` to stop after rendering) |
 | `explain_query_plan` | Human-readable plan summary |
 | `execute_sparql_raw` | Off by default; gated by `GRAPH_MCP_ENABLE_RAW_SPARQL`; rejects updates and unauthorized `SERVICE` |
+| `discover_ontology_concepts` | Delegates to [`ontology_vectorizer`](../ontology_vectorizer) for hybrid concept retrieval (embedding + Qdrant + reranking + graph-aware scoring). Requires `pip install graph-mcp[rag]`. |
 
 | Resource | Body |
 | --- | --- |

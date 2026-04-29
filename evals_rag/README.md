@@ -178,15 +178,53 @@ When `--graph-source sparql` is used:
 Two convenience scripts wrap the most common workflows:
 
 ```bash
-# Pure SPARQL smoke — confirms the live KG actually answers the raw
-# queries. No LLM, no eval harness.
+# 1. Pure SPARQL smoke — confirms the live KG actually answers the raw
+#    queries. No LLM, no eval harness. Always safe in CI.
 python scripts/run_ocean_fuseki_smoke.py
 
-# Free-text RAG smoke — discovers schema, builds candidate packs from
-# the live snapshot, and runs evals_rag against
-# `evals_rag/ocean_golden_cases.yaml`.
-python scripts/run_ocean_rag_smoke.py [--azure --model …]
+# 2. Free-text RAG smoke — discovers schema, builds candidate packs
+#    from the live snapshot, runs the planner workflow, and writes a
+#    full RAG report. **Requires an LLM** because the deterministic
+#    baseline planner only knows the small ex: fixture vocabulary; it
+#    cannot answer dcat / sosa / geo questions.
+python scripts/run_ocean_rag_smoke.py --azure --model "$AZURE_OPENAI_MODEL"
+
+# 2b. Plumbing-only mode (cases will FAIL the structural eval; the
+#     intent is to verify connectivity, schema discovery, dedup, and
+#     report wiring against a live endpoint without an LLM key).
+python scripts/run_ocean_rag_smoke.py --allow-deterministic-plumbing-smoke
 ```
+
+### Lifecycle and credential handling
+
+- The runner (`evals_rag.runner.main`) drives all async work — including
+  schema discovery, retrieval, and execution — inside a single
+  `asyncio.run` call. The HTTP endpoint is created once, used, and
+  closed in the same event loop, so reusing an `httpx.AsyncClient`
+  across loops is impossible.
+- `components.endpoint.aclose()` is called in a `finally` block so the
+  HTTP client is released even when the planner step raises.
+- Endpoint URLs are written to reports via `safe_endpoint_repr`, which
+  drops any embedded `userinfo` and query string. A URL such as
+  `http://admin:secret@host:3030/sparql` is recorded as
+  `http://host:3030/sparql`. The Basic Auth password is read only from
+  the environment variable named by `--endpoint-password-env` (default
+  `FUSEKI_ADMIN_PASSWORD`); it is never on the CLI and never echoed.
+
+### Live integration tests
+
+`tests/evals_rag/test_ocean_fuseki_integration.py` runs raw-SPARQL +
+schema-discovery checks against a live endpoint. Skipped by default;
+enable via either env var:
+
+```bash
+export RUN_FUSEKI_INTEGRATION=1
+# or
+export GRAPH_MCP_ENDPOINT_URL=http://localhost:3030/ocean/sparql
+python -m pytest tests/evals_rag/test_ocean_fuseki_integration.py
+```
+
+CI does not depend on Fuseki being available.
 
 ### Quality-gated CI
 

@@ -31,6 +31,10 @@ ai = [
 ]
 rag = [
     "qdrant-client>=1.9,<2",
+    # The ontology vectorizer is the single source of truth for ontology
+    # concept retrieval. We consume it only through its public
+    # ``ontology_vectorizer`` facade — never through internal modules.
+    "ontology-vectorizer>=0.1.0",
 ]
 dev = [
     "pytest>=8.0",
@@ -81,6 +85,20 @@ plugins = ["pydantic.mypy"]
 [[tool.mypy.overrides]]
 module = ["rdflib.*", "pydantic_ai.*", "qdrant_client.*"]
 ignore_missing_imports = true
+
+# The vectorizer's published types use tight invariant unions in places that
+# are correct at runtime but trip strict mypy. We treat it as an opaque
+# library boundary; its own test suite enforces correctness internally.
+[[tool.mypy.overrides]]
+module = ["ontology_vectorizer", "ontology_vectorizer.*"]
+ignore_missing_imports = true
+
+# uv development convenience: an editable, side-by-side checkout of the
+# vectorizer satisfies the ``ontology-vectorizer`` dependency without
+# requiring a published artifact. ``uv pip install -e ../ontology_vectorizer``
+# also works and is what the Makefile recommends for non-uv users.
+[tool.uv.sources]
+ontology-vectorizer = { path = "../ontology_vectorizer", editable = true }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

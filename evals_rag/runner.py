@@ -21,6 +21,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from evals.agent import (
     DeterministicPlanner,
@@ -273,6 +274,23 @@ def _check_thresholds(metrics: dict[str, float], thresholds: list[_ThresholdSpec
 # --- Graph-source resolution ----------------------------------------------
 
 
+def safe_endpoint_repr(url: str) -> str:
+    """Return ``scheme://host[:port]/path`` with any userinfo stripped.
+
+    Used everywhere the runner records or prints an endpoint URL so a
+    ``http://admin:secret@host/...`` form supplied on the CLI never leaks
+    the password into reports, JSON dumps, or stderr. The query string
+    is dropped as well; the path is enough to identify the endpoint.
+    """
+    if not url:
+        return ""
+    parts = urlsplit(url)
+    netloc = parts.hostname or ""
+    if parts.port:
+        netloc = f"{netloc}:{parts.port}"
+    return f"{parts.scheme}://{netloc}{parts.path}"
+
+
 @dataclass
 class _GraphSource:
     """Resolved graph-source choice (local fixture or live SPARQL endpoint)."""
@@ -284,6 +302,14 @@ class _GraphSource:
     auth: tuple[str, str] | None = None
     extra_prefixes: dict[str, str] | None = None
     description: str = ""
+
+    @property
+    def safe_description(self) -> str:
+        """Sanitized description used in reports — no userinfo."""
+        if self.kind == "sparql":
+            url = safe_endpoint_repr(self.endpoint_url or "")
+            return f"sparql ({url})"
+        return self.description
 
 
 class _GraphSourceError(ValueError):
@@ -357,6 +383,18 @@ def main(argv: list[str] | None = None) -> int:
             "available yet. Use --reranker heuristic or --reranker noop."
         )
 
+    return asyncio.run(_main_async(args))
+
+
+async def _main_async(args: argparse.Namespace) -> int:
+    """Single-event-loop owner for one runner invocation.
+
+    All async resources — the HTTP SPARQL endpoint and its underlying
+    httpx.AsyncClient — are created and consumed inside this function so
+    we do not reuse a client across separate ``asyncio.run`` calls (which
+    fails with closed-loop / closed-transport errors against Fuseki and
+    similar live endpoints).
+    """
     cases = load_cases(args.cases)
 
     try:
@@ -384,91 +422,105 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Graph source error: {exc}", file=sys.stderr)
         return 2
 
-    components = asyncio.run(_build_components_for_source(graph_source))
-    retriever_choice = build_retriever(
-        args.retriever,
-        components=components,
-        settings=settings,
-        embedding_provider=embedding_provider,
-    )
-    reranker = build_reranker(args.reranker)
-
-    config = RagPlannerConfig(
-        settings=settings,
-        per_mention=not args.full_question_retrieval,
-        include_question_retrieval=args.include_question_retrieval,
-    )
-
-    if args.planner == "rag":
-        if args.azure or args.model:
-            generate = _build_pydantic_ai_generate(
-                model=args.model, azure=args.azure, azure_endpoint=args.azure_endpoint
-            )
-        else:
-            generate = _generate_for_baseline(DeterministicPlanner())
-        planner: Planner = build_rag_planner_for_run(
+    components = await _build_components_for_source(graph_source)
+    try:
+        retriever_choice = build_retriever(
+            args.retriever,
             components=components,
-            retriever=retriever_choice.retriever,
-            reranker=reranker,
-            config=config,
-            generate=generate,
+            settings=settings,
+            embedding_provider=embedding_provider,
         )
-    elif args.planner == "deterministic":
-        planner = DeterministicPlanner()
-    else:
-        raise ValueError(f"unknown planner: {args.planner}")
+        reranker = build_reranker(args.reranker)
 
-    rag_results = asyncio.run(
-        run_rag(cases, planner, components=components, execute=not args.no_execute)
-    )
+        config = RagPlannerConfig(
+            settings=settings,
+            per_mention=not args.full_question_retrieval,
+            include_question_retrieval=args.include_question_retrieval,
+        )
 
-    baseline = _load_baseline(args.baseline_report) if args.compare_baseline else None
-    metrics = compute_rag_metrics(rag_results, baseline_metrics=baseline, k=args.k)
+        if args.planner == "rag":
+            if args.azure or args.model:
+                generate = _build_pydantic_ai_generate(
+                    model=args.model,
+                    azure=args.azure,
+                    azure_endpoint=args.azure_endpoint,
+                )
+            else:
+                generate = _generate_for_baseline(DeterministicPlanner())
+            planner: Planner = build_rag_planner_for_run(
+                components=components,
+                retriever=retriever_choice.retriever,
+                reranker=reranker,
+                config=config,
+                generate=generate,
+            )
+        elif args.planner == "deterministic":
+            planner = DeterministicPlanner()
+        else:
+            raise ValueError(f"unknown planner: {args.planner}")
 
-    thresholds = _thresholds_from_args(args)
-    threshold_failures = _check_thresholds(metrics, thresholds)
+        rag_results = await run_rag(
+            cases, planner, components=components, execute=not args.no_execute
+        )
 
-    report = RagEvaluationReport(
-        rag_results=rag_results,
-        metrics=metrics,
-        baseline_metrics=baseline,
-        runner_args={
-            "planner": args.planner,
-            "retriever": f"{args.retriever} ({retriever_choice.description})",
-            "reranker": args.reranker,
-            "embedding_provider": args.embedding_provider or "n/a",
-            "cases": str(args.cases),
-            "graph_source": graph_source.description,
-            "endpoint_url": graph_source.endpoint_url or "",
-            "sparql_update_url": graph_source.sparql_update_url or "",
-            "graph_path": str(graph_source.graph_path) if graph_source.graph_path else "",
-            "executed": str(not args.no_execute),
-            "baseline_report": str(args.baseline_report) if args.baseline_report else "",
-            "k": str(args.k),
-            "fail_below_threshold": str(args.fail_below_threshold),
-        },
-        threshold_failures=threshold_failures,
-    )
+        baseline = _load_baseline(args.baseline_report) if args.compare_baseline else None
+        metrics = compute_rag_metrics(rag_results, baseline_metrics=baseline, k=args.k)
 
-    if args.report_dir:
-        out_dir = Path(args.report_dir)
-        out_dir.mkdir(parents=True, exist_ok=True)
-        (out_dir / "metrics.json").write_text(metrics_to_json(metrics))
-        (out_dir / "report.md").write_text(render_rag_report(report))
-        (out_dir / "report.json").write_text(_serialize_report_json(report))
+        thresholds = _thresholds_from_args(args)
+        threshold_failures = _check_thresholds(metrics, thresholds)
 
-    print(metrics_to_json(metrics))
+        safe_endpoint = (
+            safe_endpoint_repr(graph_source.endpoint_url) if graph_source.endpoint_url else ""
+        )
+        safe_update = (
+            safe_endpoint_repr(graph_source.sparql_update_url)
+            if graph_source.sparql_update_url
+            else ""
+        )
+        report = RagEvaluationReport(
+            rag_results=rag_results,
+            metrics=metrics,
+            baseline_metrics=baseline,
+            runner_args={
+                "planner": args.planner,
+                "retriever": f"{args.retriever} ({retriever_choice.description})",
+                "reranker": args.reranker,
+                "embedding_provider": args.embedding_provider or "n/a",
+                "cases": str(args.cases),
+                "graph_source": graph_source.safe_description,
+                "endpoint_url": safe_endpoint,
+                "sparql_update_url": safe_update,
+                "graph_path": str(graph_source.graph_path) if graph_source.graph_path else "",
+                "executed": str(not args.no_execute),
+                "baseline_report": str(args.baseline_report) if args.baseline_report else "",
+                "k": str(args.k),
+                "fail_below_threshold": str(args.fail_below_threshold),
+            },
+            threshold_failures=threshold_failures,
+        )
 
-    if threshold_failures:
-        print("\nFailed thresholds:", file=sys.stderr)
-        for f in threshold_failures:
-            print(f"- {f}", file=sys.stderr)
+        if args.report_dir:
+            out_dir = Path(args.report_dir)
+            out_dir.mkdir(parents=True, exist_ok=True)
+            (out_dir / "metrics.json").write_text(metrics_to_json(metrics))
+            (out_dir / "report.md").write_text(render_rag_report(report))
+            (out_dir / "report.json").write_text(_serialize_report_json(report))
 
-    if args.fail_below_threshold and threshold_failures:
-        return 2
-    # Without an explicit threshold gate the runner reports success even if
-    # individual cases failed — exploration mode rather than CI gate.
-    return 0
+        print(metrics_to_json(metrics))
+
+        if threshold_failures:
+            print("\nFailed thresholds:", file=sys.stderr)
+            for f in threshold_failures:
+                print(f"- {f}", file=sys.stderr)
+
+        if args.fail_below_threshold and threshold_failures:
+            return 2
+        # Without an explicit threshold gate the runner reports success
+        # even if individual cases failed — exploration mode rather than
+        # CI gate.
+        return 0
+    finally:
+        await components.endpoint.aclose()
 
 
 def _build_parser() -> argparse.ArgumentParser:

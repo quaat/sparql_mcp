@@ -18,6 +18,7 @@ event loop.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterable
 from typing import Any, Protocol
 
@@ -472,3 +473,158 @@ def _string_list(value: Any) -> list[str]:
     if isinstance(value, list):
         return [str(v) for v in value if v is not None]
     return []
+
+
+# --- Vectorizer-backed retriever -------------------------------------------
+#
+# The MCP client used to drive Qdrant directly via :class:`QdrantOntologyRetriever`
+# above. That class is kept for backwards compatibility with the existing
+# tests and ``--retriever qdrant`` runner mode, but new code should use
+# :class:`VectorizerOntologyRetriever` which delegates *all* retrieval logic
+# (embedding, Qdrant queries, reranking, graph-aware scoring, lexical match)
+# to the ``ontology_vectorizer`` library.
+
+# Vectorizer kinds → eval-harness :data:`ConceptKind`. Keep this conservative:
+# anything we don't recognise becomes ``"unknown"`` rather than silently
+# coercing to a different family.
+_VECTORIZER_KIND_TO_EVAL: dict[str, ConceptKind] = {
+    "owl_class": "class",
+    "skos_concept": "class",
+    "object_property": "property",
+    "datatype_property": "property",
+    "annotation_property": "property",
+    "rdf_property": "property",
+}
+
+# Reverse mapping for forwarding ``expected_kinds`` filters down into the
+# vectorizer. ``individual`` / ``graph`` / ``datatype`` aren't represented in
+# the vectorizer's TBox-focused vocabulary, so they're dropped — the
+# vectorizer simply won't constrain on them.
+_EVAL_KIND_TO_VECTORIZER: dict[ConceptKind, list[str]] = {
+    "class": ["owl_class", "skos_concept"],
+    "property": [
+        "object_property",
+        "datatype_property",
+        "annotation_property",
+        "rdf_property",
+    ],
+}
+
+
+def _coerce_vectorizer_kind(raw: str) -> ConceptKind:
+    return _VECTORIZER_KIND_TO_EVAL.get(raw, "unknown")
+
+
+def _vectorizer_kinds_from_expected(expected: list[ConceptKind]) -> list[str] | None:
+    """Translate eval-harness expected kinds into vectorizer-side kinds.
+
+    Returns ``None`` when no mapping applies (so the vectorizer doesn't
+    filter at all) instead of an empty list (which the vectorizer would
+    treat as "no kinds match" and return zero results).
+    """
+    if not expected:
+        return None
+    out: list[str] = []
+    for k in expected:
+        out.extend(_EVAL_KIND_TO_VECTORIZER.get(k, []))
+    return out or None
+
+
+class VectorizerOntologyRetriever:
+    """Adapt the public ``ontology_vectorizer`` retriever to the eval harness.
+
+    This is the preferred way to retrieve concepts in the RAG harness and
+    in the MCP server: the vectorizer owns all retrieval logic and this
+    class only re-shapes results to match :class:`RetrievedConcept`.
+
+    The constructor is kept dependency-injection friendly so tests can pass
+    a stub retriever without standing up Qdrant or Foundry. Production
+    callers usually pass the result of
+    ``OntologyConceptRetriever.from_env()``.
+    """
+
+    def __init__(
+        self,
+        retriever: Any,
+        *,
+        ontology_id: str | None = None,
+        include_deprecated: bool = False,
+    ) -> None:
+        self._retriever = retriever
+        self._ontology_id = ontology_id
+        self._include_deprecated = include_deprecated
+
+    @classmethod
+    def from_env(
+        cls,
+        *,
+        ontology_id: str | None = None,
+        include_deprecated: bool = False,
+    ) -> VectorizerOntologyRetriever:
+        """Build the adapter from the documented environment variables.
+
+        Defers the import so the eval harness can still load this module
+        without the optional ``rag`` extra; the failure surfaces only when a
+        consumer actually tries to use the vectorizer-backed retriever.
+        """
+        try:
+            from ontology_vectorizer import OntologyConceptRetriever
+        except ImportError as exc:
+            raise RetrievalError(
+                "ontology_vectorizer is required for VectorizerOntologyRetriever; "
+                "install with `pip install graph-mcp[rag]`"
+            ) from exc
+        return cls(
+            OntologyConceptRetriever.from_env(),
+            ontology_id=ontology_id,
+            include_deprecated=include_deprecated,
+        )
+
+    async def retrieve(self, query: RetrievalQuery) -> list[RetrievedConcept]:
+        text = (query.mention or query.question).strip()
+        if not text:
+            return []
+        kinds = _vectorizer_kinds_from_expected(list(query.expected_kinds))
+        try:
+            response = await asyncio.to_thread(
+                self._retriever.search_concepts,
+                query=text,
+                ontology_id=self._ontology_id,
+                top_k=query.limit,
+                include_deprecated=self._include_deprecated,
+                kind_filter=kinds,
+            )
+        except RetrievalError:
+            raise
+        except Exception as exc:
+            raise RetrievalError(f"vectorizer retrieval failed: {exc}") from exc
+
+        out: list[RetrievedConcept] = []
+        for rank, r in enumerate(response.results):
+            concept = OntologyConcept(
+                iri=r.iri,
+                prefixed_name=r.compact_id,
+                label=r.preferred_label,
+                aliases=list(r.alt_labels),
+                kind=_coerce_vectorizer_kind(r.kind),
+                description=r.definition,
+                metadata={
+                    "ontology_id": r.ontology_id,
+                    "deprecated": r.deprecated,
+                    "parents": r.parents,
+                    "ancestors": r.ancestors,
+                    "group_ids": r.group_ids,
+                    "vectorizer_kind": r.kind,
+                },
+            )
+            out.append(
+                RetrievedConcept(
+                    concept=concept,
+                    score=float(r.score),
+                    retrieval_rank=rank,
+                    retrieval_source="vectorizer",
+                    matched_text=r.preferred_label or r.compact_id or r.iri,
+                    explanation=r.explanation,
+                )
+            )
+        return out
