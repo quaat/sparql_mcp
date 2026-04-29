@@ -31,6 +31,11 @@ from evals.planner_prompt import (
     build_full_system_prompt,
     load_curated_examples,
 )
+from evals.relation_hints import (
+    RelationHint,
+    format_hints_block,
+    infer_relation_hints,
+)
 from graph_mcp.compiler import QueryPlanValidator
 from graph_mcp.graph.schema_discovery import SchemaProvider, SchemaSnapshot
 from graph_mcp.graph.term_resolver import TermCandidate, TermResolutionResult, TermResolver
@@ -134,7 +139,7 @@ class DeterministicPlanner:
             return self._people_minus_founders(question)
         if "knows^+" in q or "transitively knows" in q:
             return self._knows_one_or_more(question)
-        if "at most one knows hop" in q:
+        if "zero or one knows hop" in q or "at most one knows hop" in q:
             return self._knows_zero_or_one(question)
         if "values list" in q or "in list" in q:
             return self._values_alice_bob(question)
@@ -380,36 +385,21 @@ class DeterministicPlanner:
         return PlannedOutput(question=q, plan=plan, confidence=0.8)
 
     def _knows_zero_or_one(self, q: str) -> PlannedOutput:
+        from graph_mcp.models import PropertyPathZeroOrOne
+
+        path: PropertyPath = PropertyPathZeroOrOne(operand=PropertyPathTerm(iri=_ex_iri("knows")))
         plan = SelectPlan(
             prefixes=[EX],
             projection=[Projection(var=Var(name="b"))],
             where=[
-                UnionPattern(
-                    branches=[
-                        [
-                            TriplePattern(
-                                subject=_ex_iri("alice"),
-                                predicate=_ex_iri("knows"),
-                                object=Var(name="b"),
-                            )
-                        ],
-                        [
-                            TriplePattern(
-                                subject=_ex_iri("alice"),
-                                predicate=_ex_iri("knows"),
-                                object=Var(name="mid"),
-                            ),
-                            TriplePattern(
-                                subject=Var(name="mid"),
-                                predicate=_ex_iri("knows"),
-                                object=Var(name="b"),
-                            ),
-                        ],
-                    ]
+                TriplePattern(
+                    subject=_ex_iri("alice"),
+                    predicate=path,
+                    object=Var(name="b"),
                 )
             ],
         )
-        return PlannedOutput(question=q, plan=plan, confidence=0.7)
+        return PlannedOutput(question=q, plan=plan, confidence=0.85)
 
     def _values_alice_bob(self, q: str) -> PlannedOutput:
         plan = SelectPlan(
@@ -669,7 +659,10 @@ class PlannerDiagnostics:
     term_resolution_results: list[TermResolutionResult] = field(default_factory=list)
     selected_terms: list[TermCandidate] = field(default_factory=list)
     unresolved_mentions: list[str] = field(default_factory=list)
+    ambiguous_mentions: list[str] = field(default_factory=list)
+    relation_hints: list[RelationHint] = field(default_factory=list)
     repair_attempts: int = 0
+    semantic_repair_attempts: int = 0
     validation_errors_seen: list[ValidationIssue] = field(default_factory=list)
     final_validation_ok: bool = False
     rendered_sparql: str | None = None
@@ -680,22 +673,67 @@ class PlannerDiagnostics:
             "term_resolution_results": [r.model_dump() for r in self.term_resolution_results],
             "selected_terms": [t.model_dump() for t in self.selected_terms],
             "unresolved_mentions": list(self.unresolved_mentions),
+            "ambiguous_mentions": list(self.ambiguous_mentions),
+            "relation_hints": [h.model_dump() for h in self.relation_hints],
             "repair_attempts": self.repair_attempts,
+            "semantic_repair_attempts": self.semantic_repair_attempts,
             "validation_errors_seen": [e.model_dump() for e in self.validation_errors_seen],
             "final_validation_ok": self.final_validation_ok,
             "rendered_sparql": self.rendered_sparql,
         }
 
 
+_RESOLVER_AUTO_SELECT_THRESHOLD = 0.85
+"""Score floor for auto-selecting a top candidate. Below this we require an
+exact-form match (label/prefixed-name/local-name) or treat the mention as
+ambiguous so the planner asks for clarification."""
+
+_RESOLVER_TIE_MARGIN = 0.05
+"""If the runner-up's score is within this margin of the top, treat the
+mention as ambiguous rather than auto-selecting."""
+
+
+def _is_exact_form_match(mention: str, candidate: TermCandidate) -> bool:
+    """True when the mention matches the candidate's label / prefixed name /
+    local name exactly (case-insensitive). Exact matches are safe even when
+    the score is below the auto-select threshold."""
+    m = mention.strip().lower()
+    if candidate.label and candidate.label.lower() == m:
+        return True
+    if candidate.prefixed_name and candidate.prefixed_name.lower() == m:
+        return True
+    if candidate.prefixed_name:
+        local = candidate.prefixed_name.split(":", 1)[-1].lower()
+        if local == m:
+            return True
+    last = candidate.iri.rstrip("#/").rsplit("/", 1)[-1].rsplit("#", 1)[-1].lower()
+    return last == m
+
+
 def _resolve_question_terms(
     deps: PlannerDeps, question: str
-) -> tuple[list[str], list[TermResolutionResult], list[TermCandidate], list[str]]:
+) -> tuple[
+    list[str],
+    list[TermResolutionResult],
+    list[TermCandidate],
+    list[str],
+    list[str],
+]:
     """Run the deterministic mention extractor + resolver before the LLM call.
 
-    Returns ``(extracted, results, selected, unresolved)``. ``selected``
-    contains every top candidate with score >= 0.5 — the LLM gets these as
-    a mandatory candidate table. ``unresolved`` is the subset of mentions
-    that produced no candidate above the score threshold.
+    Returns ``(extracted, results, selected, unresolved, ambiguous)``.
+
+    Selection is deliberately strict: the top candidate is auto-selected
+    only when its score is at or above
+    :data:`_RESOLVER_AUTO_SELECT_THRESHOLD`, **or** the mention exactly
+    matches the candidate's label / prefixed name / local name. When two
+    candidates tie within :data:`_RESOLVER_TIE_MARGIN` of the top, the
+    mention is recorded as ambiguous and the planner is expected to ask
+    for clarification.
+
+    This stricter behaviour fixes the v7 live failure mode where ``Term``
+    was resolved to ``ex:erin`` (fuzzy match score 0.5) and the planner
+    proceeded to plan instead of clarifying.
     """
     snap = deps.schema.snapshot()
     mentions = extract_mentions(question, snap)
@@ -703,23 +741,40 @@ def _resolve_question_terms(
     results: list[TermResolutionResult] = []
     selected: list[TermCandidate] = []
     unresolved: list[str] = []
+    ambiguous: list[str] = []
     for m in mentions:
         kinds = list(m.expected_kinds) if m.expected_kinds else None
-        # Cast Literal[...] for resolver call.
         kinds_typed: Any = kinds  # silence mypy; resolver accepts list[str].
         result = deps.resolver.resolve([m.text], expected_kinds=kinds_typed)
         results.append(result)
-        top = result.candidates[0] if result.candidates else None
-        if top is None or top.kind == "unknown" or top.score < 0.5:
+        candidates = [c for c in result.candidates if c.kind != "unknown"]
+        if not candidates:
             unresolved.append(m.text)
             continue
+        top = candidates[0]
+        runner = candidates[1] if len(candidates) > 1 else None
+        exact = _is_exact_form_match(m.text, top)
+        if exact:
+            selected.append(top)
+            continue
+        if top.score < _RESOLVER_AUTO_SELECT_THRESHOLD:
+            unresolved.append(m.text)
+            continue
+        if runner is not None and (top.score - runner.score) < _RESOLVER_TIE_MARGIN:
+            # Near-tie across candidates — ambiguous. Don't pick one.
+            ambiguous.append(m.text)
+            continue
         selected.append(top)
-    return extracted, results, selected, unresolved
+    return extracted, results, selected, unresolved, ambiguous
 
 
-def _format_resolved_terms_block(selected: list[TermCandidate], unresolved: list[str]) -> str:
+def _format_resolved_terms_block(
+    selected: list[TermCandidate],
+    unresolved: list[str],
+    ambiguous: list[str] | None = None,
+) -> str:
     """Render a compact candidate table for the planner prompt."""
-    if not selected and not unresolved:
+    if not selected and not unresolved and not (ambiguous or []):
         return "(no terms extracted from question)"
     lines: list[str] = []
     if selected:
@@ -735,6 +790,13 @@ def _format_resolved_terms_block(selected: list[TermCandidate], unresolved: list
             "if any of these are required):"
         )
         for m in unresolved:
+            lines.append(f"  - {m!r}")
+    if ambiguous:
+        lines.append(
+            "Ambiguous mentions (multiple candidates close in score — return "
+            "needs_clarification if these are required):"
+        )
+        for m in ambiguous:
             lines.append(f"  - {m!r}")
     return "\n".join(lines)
 
@@ -763,14 +825,22 @@ def run_planner_workflow(
     """
     diag = diagnostics or PlannerDiagnostics()
 
-    extracted, results, selected, unresolved = _resolve_question_terms(deps, question)
+    extracted, results, selected, unresolved, ambiguous = _resolve_question_terms(deps, question)
     diag.extracted_mentions = extracted
     diag.term_resolution_results = results
     diag.selected_terms = selected
     diag.unresolved_mentions = unresolved
+    diag.ambiguous_mentions = ambiguous
 
-    resolved_block = _format_resolved_terms_block(selected, unresolved)
-    prompt_text = f"{question}\n\n## Resolved terms\n{resolved_block}"
+    snapshot = deps.schema.snapshot()
+    hints = infer_relation_hints(question, selected, snapshot)
+    diag.relation_hints = list(hints)
+
+    resolved_block = _format_resolved_terms_block(selected, unresolved, ambiguous)
+    hints_block = format_hints_block(hints)
+    prompt_text = (
+        f"{question}\n\n## Resolved terms\n{resolved_block}\n\n## Relation hints\n{hints_block}"
+    )
 
     output = generate(prompt_text)
 

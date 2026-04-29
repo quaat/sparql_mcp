@@ -134,6 +134,32 @@ class BindingSpec(BaseModel):
     bindings: dict[str, str] = Field(default_factory=dict)
 
 
+class PropertyPathSpec(BaseModel):
+    """Structural template for a property-path triple.
+
+    Mirrors :class:`evals.models.TripleSpec` but lets a case require a
+    specific path operator (e.g. ``one_or_more``) so we can distinguish
+    ``ex:knows+`` from ``ex:knows`` from ``ex:knows?``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    subject: str
+    predicate: str
+    """The atomic predicate IRI that the path traverses (``ex:knows``)."""
+
+    operator: Literal[
+        "one_or_more",
+        "zero_or_more",
+        "zero_or_one",
+        "sequence",
+        "alternative",
+        "inverse",
+        "term",
+    ]
+    object: str
+
+
 class GoldenCaseExpected(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -179,7 +205,19 @@ class GoldenCaseExpected(BaseModel):
     expected_bindings: list[dict[str, str]] = Field(default_factory=list)
     """Expected binding rows. Each row is a dict ``{var_name: iri-or-literal}``.
     Matching is set-style: every expected row must appear in the result, but
-    the result may contain additional rows."""
+    the result may contain additional rows. The matcher tolerates variable
+    name aliasing (``?p`` ↔ ``?person``); use ``binding_aliases`` to add
+    case-specific aliases on top of the defaults."""
+
+    binding_aliases: dict[str, list[str]] = Field(default_factory=dict)
+    """Per-case overrides for variable-name aliasing in expected_bindings.
+
+    Example: ``binding_aliases: {"a": ["A"], "b": ["B"]}`` accepts the LLM
+    using uppercase variable names. Aliases are merged with the default
+    map in :data:`evals.structural.DEFAULT_VAR_ALIASES`."""
+
+    required_property_paths: list[PropertyPathSpec] = Field(default_factory=list)
+    """Property-path templates that must appear in the WHERE clause."""
 
 
 class GoldenCase(BaseModel):
@@ -247,6 +285,17 @@ class CaseResult(BaseModel):
     planner_confidence: float | None = None
     planner_assumptions: list[str] = Field(default_factory=list)
     resolved_terms: list[TermCandidate] = Field(default_factory=list)
+    """Backwards-compatible field. Populated from the workflow's selected
+    terms (deterministic), not from the LLM's self-report."""
+
+    workflow_selected_terms: list[TermCandidate] = Field(default_factory=list)
+    """Terms the deterministic resolver picked. The metric layer trusts
+    this; ``resolved_terms`` is kept for back-compat."""
+
+    planner_reported_terms: list[TermCandidate] = Field(default_factory=list)
+    """Terms the LLM said it used. Surfaces hallucinations when the LLM
+    invents resolved-term entries that don't appear in the workflow set."""
+
     generated_plan_json: dict[str, Any] | None = None
     validation_errors: list[ValidationIssue] = Field(default_factory=list)
     validation_warnings: list[ValidationIssue] = Field(default_factory=list)
@@ -255,9 +304,30 @@ class CaseResult(BaseModel):
     presentation_warnings: list[str] = Field(default_factory=list)
     extracted_mentions: list[str] = Field(default_factory=list)
     unresolved_mentions: list[str] = Field(default_factory=list)
+    ambiguous_mentions: list[str] = Field(default_factory=list)
+    relation_hints: list[dict[str, Any]] = Field(default_factory=list)
     refusal_reason: str | None = None
     clarification_question: str | None = None
     policy_code: str | None = None
+    failure_classification: (
+        Literal[
+            "EVAL_FALSE_NEGATIVE",
+            "PLANNER_SCHEMA_INFERENCE_GAP",
+            "AMBIGUOUS_OR_INVALID_GOLDEN_CASE",
+            "REAL_PLANNER_OUTPUT_ERROR",
+            "MODEL_LIMITATION",
+        ]
+        | None
+    ) = None
+    """Best-effort classification of why a case failed.
+
+    The runner sets this heuristically based on the diagnostics and the
+    failure messages; humans can override it by editing the report. The
+    classification is not used to flip pass/fail — it exists so a glance at
+    the report tells you whether to fix the eval, the planner, or the
+    fixture."""
+
+    failure_classification_reason: str | None = None
 
 
 class EvaluationReport(BaseModel):

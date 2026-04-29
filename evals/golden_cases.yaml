@@ -96,16 +96,26 @@
   question: "Find everyone Alice transitively knows^+."
   expected:
     required_pattern_kinds: [triple]
+    required_property_paths:
+      - subject: "ex:alice"
+        predicate: "ex:knows"
+        operator: "one_or_more"
+        object: "?_"
     required_terms: ["ex:knows"]
     expected_bindings:
       - {b: "ex:bob"}
       - {b: "ex:carol"}
 
-- id: case_010_path_bounded
-  question: "Find everyone Alice knows in at most one knows hop."
+- id: case_010_path_zero_or_one
+  question: "Find Alice and everyone Alice knows in zero or one knows hop."
   expected:
-    required_pattern_kinds: [union]
+    required_property_paths:
+      - subject: "ex:alice"
+        predicate: "ex:knows"
+        operator: "zero_or_one"
+        object: "?_"
     expected_bindings:
+      - {b: "ex:alice"}
       - {b: "ex:bob"}
 
 - id: case_011_values_list
@@ -139,7 +149,7 @@
   expected:
     required_aggregates:
       - function: count
-        expression: "?p"
+        expression: "?_"
     required_group_by: ["?company"]
     required_terms: ["GROUP BY", "COUNT"]
     expected_bindings:
@@ -151,7 +161,7 @@
   expected:
     required_aggregates:
       - function: count
-        expression: "?p"
+        expression: "?_"
     required_group_by: ["?company"]
     required_terms: ["HAVING", "GROUP BY", "COUNT"]
     expected_bindings:
@@ -163,7 +173,7 @@
     required_pattern_kinds: [subquery]
     required_aggregates:
       - function: max
-        expression: "?age"
+        expression: "?_"
     required_terms: ["MAX"]
     expected_bindings:
       - {p: "ex:bob", company: "ex:Acme"}

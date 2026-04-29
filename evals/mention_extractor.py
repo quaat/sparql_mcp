@@ -105,13 +105,74 @@ _STOPWORDS = frozenset(
         "group",
         "order",
         "explicitly",
+        # Language words — never schema entities.
+        "english",
+        "norwegian",
+        "french",
+        "german",
+        "spanish",
+        "japanese",
+        "chinese",
+        "italian",
+        "portuguese",
+        "dutch",
+        "swedish",
+        "en",
+        "nb",
+        "no",
+        "fr",
+        "de",
+        "es",
+        "it",
+        "ja",
+        "zh",
+        "pt",
+        "nl",
+        "sv",
+        # Aggregate / comparison cue words — handled by relation hints.
+        "top",
+        "top-1",
+        "top1",
+        "oldest",
+        "youngest",
+        "after",
+        "before",
+        "greater",
+        "less",
+        "more",
+        "fewer",
+        "most",
+        "least",
+        "max",
+        "min",
+        "exactly",
+        "than",
+        # Generic placeholders that should clarify, not resolve.
+        "term",
+        "thing",
+        "entity",
+        "item",
+        "value",
     }
 )
 
 
 def _add_unique(out: list[TermMention], mention: TermMention) -> None:
+    """Merge into an existing mention with the same normalized text.
+
+    The merge widens ``expected_kinds`` instead of duplicating the entry,
+    so a token that matches both an individual and a class hint becomes a
+    single mention with both kinds in its filter — exactly what the
+    resolver needs for disambiguation.
+    """
+    norm = mention.text.strip().lower()
     for existing in out:
-        if existing.text == mention.text and existing.expected_kinds == mention.expected_kinds:
+        if existing.text.strip().lower() == norm:
+            merged_kinds = list(existing.expected_kinds)
+            for k in mention.expected_kinds:
+                if k not in merged_kinds:
+                    merged_kinds.append(k)
+            existing.expected_kinds = tuple(merged_kinds)
             existing.sources.extend(s for s in mention.sources if s not in existing.sources)
             return
     out.append(mention)
@@ -204,6 +265,11 @@ def extract_mentions(question: str, schema: SchemaSnapshot) -> list[TermMention]
     for m in _CAPITAL_WORD.finditer(question):
         token = m.group(1)
         if token.lower() in _STOPWORDS:
+            continue
+        # Skip language tags written with a hyphen-language form like ``en-US``
+        # or aggregate cues like ``Top-1``. Anything ending with a digit
+        # following a hyphen is treated as a query-shape cue, not an entity.
+        if "-" in token and token.split("-", 1)[-1].isdigit():
             continue
         # Skip tokens that appear as the first word of a sentence (e.g. "Show")
         # unless followed by a noun phrase. The cheap heuristic: skip if it's

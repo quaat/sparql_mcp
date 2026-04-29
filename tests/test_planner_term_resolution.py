@@ -50,7 +50,7 @@ async def test_resolver_finds_acme_and_works_for() -> None:
         renderer=components.renderer,
         policy=components.policy,
     )
-    _, _, selected, _ = _resolve_question_terms(deps, "Who works for Acme?")
+    _, _, selected, _, _ = _resolve_question_terms(deps, "Who works for Acme?")
     iris = {c.iri for c in selected}
     assert "http://example.org/worksFor" in iris
     assert "http://example.org/Acme" in iris

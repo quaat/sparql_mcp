@@ -39,6 +39,15 @@ class ClassTerm(SchemaTerm):
 class PropertyTerm(SchemaTerm):
     domain: list[str] = Field(default_factory=list)
     range: list[str] = Field(default_factory=list)
+    observed_domain: list[str] = Field(default_factory=list)
+    """Class IRIs observed as subject types in actual ``?s ?p ?o`` triples.
+
+    These are inferred at discovery time, not declared in the ontology;
+    they fill the gap when the schema lacks ``rdfs:domain`` declarations
+    (which is the common case for ad-hoc graphs)."""
+
+    observed_range: list[str] = Field(default_factory=list)
+    """Class IRIs (or XSD datatypes) observed as object types."""
 
 
 class IndividualTerm(SchemaTerm):
@@ -184,6 +193,16 @@ class SparqlSchemaProvider:
         individuals = await self._discover_individuals(cfg, diagnostics)
         named_graphs = await self._discover_named_graphs(cfg, diagnostics)
 
+        # Schema discovery uses ``?s rdf:type ?t`` as a fallback for
+        # finding individuals, but RDFS / OWL declare classes and
+        # properties via the same predicate (``ex:Person rdf:type rdfs:Class``,
+        # ``ex:worksFor rdf:type rdf:Property``). Filter those out so the
+        # term resolver doesn't return ``ex:Company`` as both a class and
+        # an individual — that confused the v7 live planner into asking for
+        # clarification on otherwise-unambiguous mentions.
+        ontology_iris = {c.iri for c in classes} | {p.iri for p in properties}
+        individuals = [i for i in individuals if i.iri not in ontology_iris]
+
         # Generate prefixed_name for every term whose IRI starts with a known prefix.
         for term in (*classes, *properties, *individuals):
             term.prefixed_name = _to_prefixed(term.iri, prefixes)
@@ -315,17 +334,21 @@ class SparqlSchemaProvider:
         out: list[PropertyTerm] = []
         # Domain / range as a separate, side query. Aggregated in Python.
         domain_range = await self._discover_property_domain_range(cfg, diag)
+        observed = await self._discover_observed_domain_range(cfg, diag)
         for r in rows:
             iri = r.get("p")
             if not iri:
                 continue
             domain, range_ = domain_range.get(iri, ([], []))
+            obs_domain, obs_range = observed.get(iri, ([], []))
             out.append(
                 PropertyTerm(
                     iri=iri,
                     label=r.get("label"),
                     domain=domain,
                     range=range_,
+                    observed_domain=obs_domain,
+                    observed_range=obs_range,
                 )
             )
         return out
@@ -358,6 +381,54 @@ class SparqlSchemaProvider:
                 domain.append(r["dom"])
             if r.get("rng") and r["rng"] not in range_:
                 range_.append(r["rng"])
+        return out
+
+    async def _discover_observed_domain_range(
+        self, cfg: SparqlDiscoveryConfig, diag: list[SchemaDiagnostic]
+    ) -> dict[str, tuple[list[str], list[str]]]:
+        """Infer subject/object types from actual ``?s ?p ?o`` triples.
+
+        For each predicate, collect the rdf:type of subjects and objects,
+        plus the datatype of literal objects. We aggregate in Python rather
+        than running heavier GROUP_CONCAT queries — the cost is one extra
+        SELECT per discovery cycle and the result is far more useful than
+        what most graphs declare via rdfs:domain / rdfs:range.
+        """
+        sparql = (
+            "SELECT ?p ?st ?ot ?dt WHERE { "
+            "  ?s ?p ?o . "
+            "  OPTIONAL { "
+            "    ?s <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> ?st . "
+            "  } "
+            "  OPTIONAL { "
+            "    ?o <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> ?ot . "
+            "  } "
+            '  BIND(IF(isLiteral(?o), DATATYPE(?o), "") AS ?dt) '
+            "  FILTER (isIRI(?p)) "
+            f"}} LIMIT {cfg.max_properties * 50}"
+        )
+        rows = await self._select(
+            sparql,
+            timeout_ms=cfg.timeout_ms,
+            max_rows=cfg.max_properties * 50,
+            section="properties_observed_domain_range",
+            diagnostics=diag,
+        )
+        out: dict[str, tuple[list[str], list[str]]] = {}
+        for r in rows:
+            iri = r.get("p")
+            if not iri:
+                continue
+            domain, range_ = out.setdefault(iri, ([], []))
+            st = r.get("st")
+            ot = r.get("ot")
+            dt = r.get("dt")
+            if st and st not in domain:
+                domain.append(st)
+            if ot and ot not in range_:
+                range_.append(ot)
+            elif dt and dt not in range_:
+                range_.append(dt)
         return out
 
     async def _discover_individuals(

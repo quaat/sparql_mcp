@@ -91,18 +91,28 @@ def load_cases(path: str | Path) -> list[GoldenCase]:
 
 
 def _attach_diagnostics(result: CaseResult, planner: Planner, output: PlannerOutput) -> None:
-    """Copy the workflow diagnostics + planner output onto the case result."""
+    """Copy the workflow diagnostics + planner output onto the case result.
+
+    The metric and report layers trust the *workflow*-selected terms (built
+    deterministically by the resolver), not the LLM's self-reported
+    ``resolved_terms`` field — those can be hallucinated.
+    """
     diag = getattr(planner, "last_diagnostics", None)
     if diag is not None:
         result.extracted_mentions = list(diag.extracted_mentions)
         result.unresolved_mentions = list(diag.unresolved_mentions)
+        result.ambiguous_mentions = list(getattr(diag, "ambiguous_mentions", []))
+        result.workflow_selected_terms = list(getattr(diag, "selected_terms", []))
         result.validation_errors = list(diag.validation_errors_seen)
         result.repair_attempts = diag.repair_attempts
         result.rendered_sparql = result.rendered_sparql or diag.rendered_sparql
+        result.relation_hints = [h.model_dump() for h in getattr(diag, "relation_hints", [])]
     result.planner_status = output.status
     result.planner_confidence = output.confidence
     result.planner_assumptions = list(output.assumptions)
-    result.resolved_terms = list(output.resolved_terms)
+    result.planner_reported_terms = list(output.resolved_terms)
+    # Backwards-compat: ``resolved_terms`` shows the trusted workflow set.
+    result.resolved_terms = list(result.workflow_selected_terms or output.resolved_terms)
     if isinstance(output, PlannedOutput):
         result.generated_plan_json = output.plan.model_dump()
     if isinstance(output, ClarificationOutput):
@@ -110,6 +120,63 @@ def _attach_diagnostics(result: CaseResult, planner: Planner, output: PlannerOut
     if isinstance(output, RefusedOutput):
         result.refusal_reason = output.refusal_reason
         result.policy_code = output.policy_code
+
+
+def _classify_failure(case: GoldenCase, result: CaseResult) -> None:
+    """Heuristically classify why a case failed. Sets `failure_classification`.
+
+    Rules (most-specific first):
+
+    - ``UNEXPECTED_REFUSAL`` / ``UNEXPECTED_CLARIFICATION`` on a case with
+      unresolved or ambiguous mentions → ``PLANNER_SCHEMA_INFERENCE_GAP``.
+    - Only ``MISSING_BINDING`` failures with an executed result whose row
+      values look reasonable → ``EVAL_FALSE_NEGATIVE`` (variable name or
+      prefix mismatch likely).
+    - ``RESULT_MISMATCH`` only → ``REAL_PLANNER_OUTPUT_ERROR``.
+    - ``EXECUTION_ERROR`` only → ``REAL_PLANNER_OUTPUT_ERROR``.
+    - ``INVALID_PLAN`` → ``REAL_PLANNER_OUTPUT_ERROR``.
+    - Otherwise → unset.
+    """
+    if not result.failures:
+        return
+    fails = result.failures
+    only_bindings = all(f.startswith("MISSING_BINDING") for f in fails)
+    if only_bindings and result.executed and result.execution_rows:
+        # The query executed and returned rows; the only failure is binding
+        # comparison. That is overwhelmingly an eval false negative.
+        result.failure_classification = "EVAL_FALSE_NEGATIVE"
+        result.failure_classification_reason = (
+            "Only MISSING_BINDING failures and the query returned rows; "
+            "likely variable-name or prefix mismatch in the matcher."
+        )
+        return
+    if any("UNEXPECTED_REFUSAL" in f or "UNEXPECTED_CLARIFICATION" in f for f in fails):
+        result.failure_classification = "PLANNER_SCHEMA_INFERENCE_GAP"
+        result.failure_classification_reason = (
+            "Planner refused or asked for clarification on a normal query. "
+            "Often a schema-relationship inference gap."
+        )
+        return
+    if any("INVALID_PLAN" in f for f in fails):
+        result.failure_classification = "REAL_PLANNER_OUTPUT_ERROR"
+        result.failure_classification_reason = "Validator rejected the planner's output."
+        return
+    if any("RESULT_MISMATCH" in f for f in fails):
+        result.failure_classification = "REAL_PLANNER_OUTPUT_ERROR"
+        result.failure_classification_reason = (
+            "Query executed but row count outside the expected bound."
+        )
+        return
+    if any("EXECUTION_ERROR" in f for f in fails):
+        result.failure_classification = "REAL_PLANNER_OUTPUT_ERROR"
+        result.failure_classification_reason = "Query failed at execution time."
+        return
+    if any("MISSING_KINDS" in f or "MISSING_TRIPLE" in f for f in fails):
+        result.failure_classification = "REAL_PLANNER_OUTPUT_ERROR"
+        result.failure_classification_reason = (
+            "Plan structure does not match the expected pattern shape."
+        )
+        return
 
 
 async def run_one(
@@ -121,6 +188,7 @@ async def run_one(
     endpoint: LocalRdflibEndpoint,
     policy: SecurityPolicy,
     execute: bool = True,
+    semantic_repair_attempts: int = 0,
 ) -> CaseResult:
     semantic_failures: list[str] = []
     presentation_warnings: list[str] = []
@@ -142,6 +210,8 @@ async def run_one(
         )
         result.semantic_failures = [f"PLAN_ERROR: {exc}"]
         result.failures = list(result.semantic_failures)
+        result.failure_classification = "REAL_PLANNER_OUTPUT_ERROR"
+        result.failure_classification_reason = "Planner raised an exception."
         return result
 
     # --- Clarification expectation ---------------------------------------
@@ -162,6 +232,7 @@ async def run_one(
         result.semantic_failures = semantic_failures
         result.failures = list(semantic_failures)
         _attach_diagnostics(result, planner, out)
+        _classify_failure(case, result)
         return result
 
     # --- Refusal / unsafe expectation ------------------------------------
@@ -191,6 +262,7 @@ async def run_one(
         result.semantic_failures = semantic_failures
         result.failures = list(semantic_failures)
         _attach_diagnostics(result, planner, out)
+        _classify_failure(case, result)
         return result
 
     # --- Normal queries: planner must have produced a PlannedOutput ------
@@ -213,6 +285,7 @@ async def run_one(
         result.semantic_failures = semantic_failures
         result.failures = list(semantic_failures)
         _attach_diagnostics(result, planner, out)
+        _classify_failure(case, result)
         return result
 
     # --- Validate the plan -----------------------------------------------
@@ -236,6 +309,7 @@ async def run_one(
         result.validation_errors = list(res.errors)
         result.validation_warnings = list(res.warnings)
         _attach_diagnostics(result, planner, out)
+        _classify_failure(case, result)
         return result
 
     rendered = renderer.render(out.plan)
@@ -335,6 +409,15 @@ async def run_one(
     if ob_total and ob_present < ob_total:
         semantic_failures.append("MISSING_ORDER_BY")
 
+    # required_property_paths
+    from evals.structural import has_property_path
+
+    for pp in expected.required_property_paths:
+        if not has_property_path(out.plan, pp):
+            semantic_failures.append(
+                f"MISSING_PROPERTY_PATH: {pp.subject} {pp.operator}({pp.predicate}) {pp.object}"
+            )
+
     # --- Execution -------------------------------------------------------
     eb_total = len(expected.expected_bindings)
     eb_present = 0
@@ -372,7 +455,12 @@ async def run_one(
 
             prefixes = {p.prefix: p.iri for p in out.plan.prefixes}
             for expected_row in expected.expected_bindings:
-                if matches_bindings(actual_rows, expected_row, prefixes=prefixes):
+                if matches_bindings(
+                    actual_rows,
+                    expected_row,
+                    prefixes=prefixes,
+                    binding_aliases=expected.binding_aliases,
+                ):
                     eb_present += 1
                 else:
                     semantic_failures.append(f"MISSING_BINDING: {expected_row}")
@@ -418,7 +506,93 @@ async def run_one(
     result.validation_warnings = list(res.warnings)
     result.execution_rows = actual_rows
     _attach_diagnostics(result, planner, out)
+
+    # --- Optional semantic repair pass -----------------------------------
+    if (
+        semantic_repair_attempts > 0
+        and result.failures
+        and isinstance(out, PlannedOutput)
+        and result.executed
+    ):
+        for _ in range(semantic_repair_attempts):
+            feedback = _build_semantic_feedback(case, result)
+            try:
+                out2 = await asyncio.to_thread(planner.plan, feedback)
+            except Exception:
+                break
+            if not isinstance(out2, PlannedOutput):
+                break
+            retry = await run_one(
+                case,
+                _SingleShotPlanner(out2, planner),
+                validator=validator,
+                renderer=renderer,
+                endpoint=endpoint,
+                policy=policy,
+                execute=execute,
+                semantic_repair_attempts=0,
+            )
+            if not retry.failures:
+                # Repair worked: keep the better result but record that a
+                # semantic repair was needed.
+                retry.repair_attempts = max(retry.repair_attempts, 1)
+                retry.repair_attempted = True
+                retry.repair_succeeded = True
+                _classify_failure(case, retry)
+                return retry
+            # Otherwise stick with the latest attempt's diagnostics.
+            result = retry
+            result.repair_attempts = max(result.repair_attempts, 1)
+            result.repair_attempted = True
+            result.repair_succeeded = False
+            if not isinstance(out2, PlannedOutput):
+                break
+            out = out2
+
+    _classify_failure(case, result)
     return result
+
+
+def _build_semantic_feedback(case: GoldenCase, result: CaseResult) -> str:
+    """Format a feedback prompt summarizing what went wrong semantically."""
+    lines = [case.question, "", "## Semantic feedback from previous attempt"]
+    if result.rendered_sparql:
+        lines.append("Previous SPARQL:")
+        lines.append("```sparql")
+        lines.append(result.rendered_sparql)
+        lines.append("```")
+    if result.execution_rows:
+        lines.append(f"Previous result rows ({result.row_count}):")
+        for row in result.execution_rows[:5]:
+            lines.append(f"  - {row}")
+    lines.append("Failures:")
+    for f in result.semantic_failures:
+        lines.append(f"  - {f}")
+    lines.append(
+        "Produce a corrected PlannedOutput. Do not switch to raw SPARQL. "
+        "Do not ask for clarification unless the failure is genuinely "
+        "caused by ambiguous user input. Address the listed failures."
+    )
+    return "\n".join(lines)
+
+
+class _SingleShotPlanner:
+    """Wraps a pre-computed PlannedOutput as a Planner.
+
+    Used by the semantic-repair loop: after we re-call the underlying
+    planner with feedback we need to feed the new output through the same
+    evaluation pipeline (validate → render → execute → score). Re-using
+    ``run_one`` is simpler than duplicating that pipeline.
+    """
+
+    def __init__(self, output: PlannerOutput, real: Planner) -> None:
+        self._output = output
+        self.last_repair_attempted = bool(getattr(real, "last_repair_attempted", False))
+        self.last_repair_succeeded = bool(getattr(real, "last_repair_succeeded", False))
+        self.last_diagnostics = getattr(real, "last_diagnostics", None)
+
+    def plan(self, question: str, *, resolver: Any = None) -> PlannerOutput:
+        return self._output
 
 
 def _pattern_kinds_in_plan(plan: Any) -> set[str]:
@@ -459,6 +633,15 @@ def render_markdown_report(report: EvaluationReport) -> str:
         ok = not c.failures
         marker = "PASS" if ok else "FAIL"
         lines.append(f"### [{marker}] {c.case_id} — {c.question}")
+        if c.failure_classification:
+            lines.append(
+                f"- failure class: `{c.failure_classification}`"
+                + (
+                    f" — {c.failure_classification_reason}"
+                    if c.failure_classification_reason
+                    else ""
+                )
+            )
         if c.planner_status:
             lines.append(
                 f"- planner status: `{c.planner_status}`"
@@ -472,15 +655,36 @@ def render_markdown_report(report: EvaluationReport) -> str:
             lines.append(f"- refusal: {c.refusal_reason}")
         if c.clarification_question:
             lines.append(f"- clarification: {c.clarification_question}")
-        if c.resolved_terms:
-            lines.append("- resolved terms:")
-            for t in c.resolved_terms:
+        if c.workflow_selected_terms:
+            lines.append("- workflow-selected terms (deterministic, used for metrics):")
+            for t in c.workflow_selected_terms:
                 pn = t.prefixed_name or t.iri
                 lines.append(f"  - {t.mention!r} → {pn} ({t.kind}, score={t.score:.2f})")
+        if c.planner_reported_terms:
+            # Only show this when it differs from the workflow set, to keep
+            # the report compact.
+            planner_iris = {t.iri for t in c.planner_reported_terms}
+            workflow_iris = {t.iri for t in c.workflow_selected_terms}
+            if planner_iris != workflow_iris:
+                lines.append("- planner-reported terms (for cross-check):")
+                for t in c.planner_reported_terms:
+                    pn = t.prefixed_name or t.iri
+                    lines.append(f"  - {t.mention!r} → {pn} ({t.kind})")
+        if c.relation_hints:
+            lines.append("- relation hints:")
+            for h in c.relation_hints:
+                hint_name = h.get("prefixed_name") or h.get("property_iri")
+                lines.append(
+                    f"  - {hint_name} "
+                    f"({h.get('subject_type', '?')} → {h.get('object_type', '?')}) "
+                    f"score={h.get('score', 0):.2f}"
+                )
         if c.extracted_mentions:
             lines.append(f"- extracted mentions: {c.extracted_mentions}")
         if c.unresolved_mentions:
             lines.append(f"- unresolved mentions: {c.unresolved_mentions}")
+        if c.ambiguous_mentions:
+            lines.append(f"- ambiguous mentions: {c.ambiguous_mentions}")
         if c.semantic_failures:
             lines.append("- semantic failures:")
             for f in c.semantic_failures:
@@ -604,6 +808,7 @@ async def run(
     *,
     components: PlannerComponents,
     execute: bool = True,
+    semantic_repair_attempts: int = 0,
 ) -> EvaluationReport:
     results: list[CaseResult] = []
     for case in cases:
@@ -616,6 +821,7 @@ async def run(
                 endpoint=components.endpoint,
                 policy=components.policy,
                 execute=execute,
+                semantic_repair_attempts=semantic_repair_attempts,
             )
         )
     metrics = compute_metrics(results)
@@ -668,6 +874,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-execute", action="store_true")
     parser.add_argument("--report-dir", default=None, help="Directory to write JSON+MD reports")
     parser.add_argument("--max-repair-attempts", type=int, default=2)
+    parser.add_argument(
+        "--semantic-repair-attempts",
+        type=int,
+        default=0,
+        help=(
+            "When >0, re-call the planner with structured semantic feedback "
+            "(missing bindings, wrong row counts) up to this many times after "
+            "an executed plan fails semantic checks. Eval-only signal; the "
+            "production MCP server does not see this."
+        ),
+    )
     # Quality gates.
     parser.add_argument("--min-case-pass-rate", type=float, default=None)
     parser.add_argument("--min-valid-plan-rate", type=float, default=None)
@@ -694,7 +911,15 @@ def main(argv: list[str] | None = None) -> int:
         max_repair_attempts=args.max_repair_attempts,
     )
 
-    report = asyncio.run(run(cases, planner, components=components, execute=not args.no_execute))
+    report = asyncio.run(
+        run(
+            cases,
+            planner,
+            components=components,
+            execute=not args.no_execute,
+            semantic_repair_attempts=args.semantic_repair_attempts,
+        )
+    )
 
     if args.report_dir:
         out_dir = Path(args.report_dir)
