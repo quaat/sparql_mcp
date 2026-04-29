@@ -64,6 +64,7 @@ from graph_mcp.models.iri import (
 from graph_mcp.models.literals import (
     DEFAULT_PREFIXES,
     LANG_TAG_REGEX,
+    OCEAN_KG_PREFIXES,
     PREFIX_REGEX,
     VAR_NAME_REGEX,
 )
@@ -87,6 +88,7 @@ __all__ = [
     "ALLOWED_UNARY_OPS",
     "DEFAULT_PREFIXES",
     "LANG_TAG_REGEX",
+    "OCEAN_KG_PREFIXES",
     "PREFIX_REGEX",
     "VAR_NAME_REGEX",
     "AggregateExpr",

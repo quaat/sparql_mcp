@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -53,6 +54,7 @@ from evals_rag.retrieval import (
     OntologyRetriever,
     QdrantOntologyRetriever,
 )
+from graph_mcp.models.literals import OCEAN_KG_PREFIXES
 
 _DEFAULT_CASES = Path(__file__).resolve().parent.parent / "evals" / "golden_cases.yaml"
 _DEFAULT_GRAPH = Path(__file__).resolve().parent.parent / "evals" / "sample_dataset.trig"
@@ -268,6 +270,80 @@ def _check_thresholds(metrics: dict[str, float], thresholds: list[_ThresholdSpec
     return failures
 
 
+# --- Graph-source resolution ----------------------------------------------
+
+
+@dataclass
+class _GraphSource:
+    """Resolved graph-source choice (local fixture or live SPARQL endpoint)."""
+
+    kind: str  # "local" or "sparql"
+    graph_path: Path | None = None
+    endpoint_url: str | None = None
+    sparql_update_url: str | None = None
+    auth: tuple[str, str] | None = None
+    extra_prefixes: dict[str, str] | None = None
+    description: str = ""
+
+
+class _GraphSourceError(ValueError):
+    """Raised when --graph-source / --endpoint-url cannot be resolved."""
+
+
+def _resolve_graph_source(args: argparse.Namespace) -> _GraphSource:
+    """Resolve the CLI graph-source flags into a :class:`_GraphSource`.
+
+    Reads ``GRAPH_MCP_ENDPOINT_URL`` / ``GRAPH_MCP_SPARQL_UPDATE_URL`` as
+    fallbacks. Reads the password from ``args.endpoint_password_env``
+    (default ``FUSEKI_ADMIN_PASSWORD``); the password itself is never read
+    from a CLI flag.
+    """
+    if args.graph_source == "local":
+        path = Path(args.graph)
+        return _GraphSource(
+            kind="local",
+            graph_path=path,
+            description=f"local rdflib ({path.name})",
+        )
+    if args.graph_source != "sparql":
+        raise _GraphSourceError(f"unknown graph source: {args.graph_source!r}")
+
+    endpoint_url = args.endpoint_url or os.environ.get("GRAPH_MCP_ENDPOINT_URL")
+    if not endpoint_url:
+        raise _GraphSourceError(
+            "--graph-source sparql requires --endpoint-url or GRAPH_MCP_ENDPOINT_URL"
+        )
+    update_url = args.sparql_update_url or os.environ.get("GRAPH_MCP_SPARQL_UPDATE_URL")
+    auth: tuple[str, str] | None = None
+    if args.endpoint_user:
+        password = os.environ.get(args.endpoint_password_env)
+        if not password:
+            raise _GraphSourceError(
+                f"--endpoint-user is set but ${args.endpoint_password_env} is empty"
+            )
+        auth = (args.endpoint_user, password)
+    return _GraphSource(
+        kind="sparql",
+        endpoint_url=endpoint_url,
+        sparql_update_url=update_url,
+        auth=auth,
+        extra_prefixes=dict(OCEAN_KG_PREFIXES),
+        description=f"sparql ({endpoint_url})",
+    )
+
+
+async def _build_components_for_source(source: _GraphSource) -> PlannerComponents:
+    """Build :class:`PlannerComponents` for the resolved graph source."""
+    if source.kind == "local":
+        assert source.graph_path is not None
+        return await build_components(graph_path=source.graph_path)
+    return await build_components(
+        endpoint_url=source.endpoint_url,
+        auth=source.auth,
+        extra_prefixes=source.extra_prefixes,
+    )
+
+
 # --- CLI -------------------------------------------------------------------
 
 
@@ -302,7 +378,13 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         embedding_provider = build_embedding_provider(provider_name)
 
-    components = asyncio.run(build_components(graph_path=Path(args.graph)))
+    try:
+        graph_source = _resolve_graph_source(args)
+    except _GraphSourceError as exc:
+        print(f"Graph source error: {exc}", file=sys.stderr)
+        return 2
+
+    components = asyncio.run(_build_components_for_source(graph_source))
     retriever_choice = build_retriever(
         args.retriever,
         components=components,
@@ -356,7 +438,10 @@ def main(argv: list[str] | None = None) -> int:
             "reranker": args.reranker,
             "embedding_provider": args.embedding_provider or "n/a",
             "cases": str(args.cases),
-            "graph": str(args.graph),
+            "graph_source": graph_source.description,
+            "endpoint_url": graph_source.endpoint_url or "",
+            "sparql_update_url": graph_source.sparql_update_url or "",
+            "graph_path": str(graph_source.graph_path) if graph_source.graph_path else "",
             "executed": str(not args.no_execute),
             "baseline_report": str(args.baseline_report) if args.baseline_report else "",
             "k": str(args.k),
@@ -406,7 +491,46 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--cases", default=str(_DEFAULT_CASES))
+    parser.add_argument(
+        "--graph-source",
+        default="local",
+        choices=("local", "sparql"),
+        help=(
+            "Where the planner's endpoint and schema discovery should run. "
+            "'local' uses the RDF fixture at --graph; 'sparql' uses the live "
+            "endpoint at --endpoint-url (or GRAPH_MCP_ENDPOINT_URL)."
+        ),
+    )
     parser.add_argument("--graph", default=str(_DEFAULT_GRAPH))
+    parser.add_argument(
+        "--endpoint-url",
+        default=None,
+        help=(
+            "SPARQL query endpoint URL. Required when --graph-source sparql; "
+            "falls back to the GRAPH_MCP_ENDPOINT_URL env var."
+        ),
+    )
+    parser.add_argument(
+        "--sparql-update-url",
+        default=None,
+        help=(
+            "Optional SPARQL Update endpoint URL. Recorded in the report for "
+            "traceability; the eval runner never issues updates by itself."
+        ),
+    )
+    parser.add_argument(
+        "--endpoint-user",
+        default=None,
+        help="Basic-auth username for the SPARQL endpoint. Optional.",
+    )
+    parser.add_argument(
+        "--endpoint-password-env",
+        default="FUSEKI_ADMIN_PASSWORD",
+        help=(
+            "Name of the environment variable holding the Basic-auth password. "
+            "The password is never read from the CLI directly."
+        ),
+    )
     parser.add_argument("--no-execute", action="store_true")
     parser.add_argument("--report-dir", default=None)
     parser.add_argument(

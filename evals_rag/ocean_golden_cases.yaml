@@ -1,0 +1,79 @@
+# Ocean / dcat / sosa / geo free-text smoke cases.
+#
+# These are intentionally light on structural expectations: the live
+# Fuseki dataset is small (around 10 datasets), and the planner / LLM may
+# produce different but still correct shapes. Each case requires the
+# discriminating predicate(s) and asks for at least one row, which is
+# enough to confirm the live RAG path is end-to-end functional.
+
+- id: ocean_001_temperature_datasets
+  question: "Find datasets that include temperature-related variables."
+  expected:
+    required_pattern_kinds: [triple]
+    required_terms: ["dcat:Dataset", "dcat:theme", "skos:broader"]
+    forbidden_features: [raw_sparql, service]
+    result_expectation:
+      min_rows: 1
+
+- id: ocean_002_platforms_sensors_variables
+  question: "Find platforms, sensors, and variables they observe."
+  expected:
+    required_pattern_kinds: [triple]
+    required_terms: ["sosa:Platform", "sosa:hosts", "sosa:observes"]
+    forbidden_features: [raw_sparql, service]
+    result_expectation:
+      min_rows: 1
+
+- id: ocean_003_spatial_geometries
+  question: "Find datasets with spatial geometries."
+  expected:
+    required_pattern_kinds: [triple]
+    required_terms: ["dcat:Dataset", "dcterms:spatial", "geo:hasGeometry", "geo:asWKT"]
+    forbidden_features: [raw_sparql, service]
+    result_expectation:
+      min_rows: 1
+
+- id: ocean_004_active_after_2020
+  question: "Find datasets active during or after 2020."
+  expected:
+    required_pattern_kinds: [triple, filter]
+    required_terms: ["dcat:Dataset", "dcterms:temporal", "dcat:startDate"]
+    forbidden_features: [raw_sparql, service]
+    result_expectation:
+      min_rows: 1
+
+- id: ocean_005_platforms_buoys_floats
+  question: "Find datasets involving buoys, floats, vessels, satellites, or moorings."
+  expected:
+    required_pattern_kinds: [triple]
+    required_terms: ["dcat:Dataset", "app:describesEntity", "sosa:Platform", "dcterms:type"]
+    forbidden_features: [raw_sparql, service]
+    result_expectation:
+      min_rows: 1
+
+- id: ocean_006_publishers
+  question: "Find datasets and their publishers."
+  expected:
+    required_pattern_kinds: [triple]
+    required_terms: ["dcat:Dataset", "dcterms:publisher"]
+    forbidden_features: [raw_sparql, service]
+    result_expectation:
+      min_rows: 1
+
+- id: ocean_007_provenance
+  question: "Trace dataset provenance back to source metadata URLs."
+  expected:
+    required_pattern_kinds: [triple]
+    required_terms: ["dcat:Dataset", "prov:wasDerivedFrom"]
+    forbidden_features: [raw_sparql, service]
+    result_expectation:
+      min_rows: 1
+
+- id: ocean_008_distributions_formats
+  question: "Find datasets with access distributions and formats."
+  expected:
+    required_pattern_kinds: [triple]
+    required_terms: ["dcat:Dataset", "dcat:distribution", "dcterms:format", "dcat:accessURL"]
+    forbidden_features: [raw_sparql, service]
+    result_expectation:
+      min_rows: 1

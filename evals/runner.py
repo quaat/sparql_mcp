@@ -39,12 +39,15 @@ from evals.models import (
 from graph_mcp.compiler import QueryPlanValidator, SparqlRenderer
 from graph_mcp.config import Settings
 from graph_mcp.graph import LocalRdflibEndpoint
+from graph_mcp.graph.endpoint import GraphEndpoint, HttpSparqlEndpoint
 from graph_mcp.graph.schema_discovery import (
     SchemaProvider,
+    SparqlDiscoveryConfig,
     SparqlSchemaProvider,
     StaticSchemaProvider,
 )
 from graph_mcp.graph.term_resolver import TermResolver
+from graph_mcp.models.literals import DEFAULT_PREFIXES, OCEAN_KG_PREFIXES
 from graph_mcp.security import SecurityPolicy
 
 _DEFAULT_GRAPH = Path(__file__).parent / "sample_dataset.trig"
@@ -195,7 +198,7 @@ async def run_one(
     *,
     validator: QueryPlanValidator,
     renderer: SparqlRenderer,
-    endpoint: LocalRdflibEndpoint,
+    endpoint: GraphEndpoint,
     policy: SecurityPolicy,
     execute: bool = True,
     semantic_repair_attempts: int = 0,
@@ -736,7 +739,11 @@ def render_markdown_report(report: EvaluationReport) -> str:
 
 @dataclass
 class PlannerComponents:
-    """Bundle of dependencies the planner needs."""
+    """Bundle of dependencies the planner needs.
+
+    ``endpoint`` is widened to :class:`GraphEndpoint` so the same component
+    bundle can hold a local rdflib graph or a live HTTP SPARQL endpoint.
+    """
 
     settings: Settings
     policy: SecurityPolicy
@@ -744,24 +751,64 @@ class PlannerComponents:
     renderer: SparqlRenderer
     schema_provider: SchemaProvider
     resolver: TermResolver
-    endpoint: LocalRdflibEndpoint
+    endpoint: GraphEndpoint
 
 
 async def build_components(
-    *, graph_path: Path, settings: Settings | None = None
+    *,
+    graph_path: Path | None = None,
+    endpoint_url: str | None = None,
+    endpoint: GraphEndpoint | None = None,
+    settings: Settings | None = None,
+    extra_prefixes: dict[str, str] | None = None,
+    auth: tuple[str, str] | None = None,
 ) -> PlannerComponents:
     """Construct every dependency the planner workflow needs.
 
-    The schema is discovered from the local Turtle file so the LLM planner
-    has the ontology available in its prompt and the resolver has terms to
-    map mentions onto.
+    Exactly one of ``graph_path``, ``endpoint_url``, or ``endpoint`` must
+    be supplied:
+
+    - ``graph_path`` → local rdflib endpoint loaded from an RDF fixture.
+    - ``endpoint_url`` → live :class:`HttpSparqlEndpoint` with optional
+      Basic Auth.
+    - ``endpoint`` → caller-built endpoint (used by tests to inject a
+      fake / mocked endpoint).
+
+    The schema is discovered from the chosen endpoint so the LLM planner
+    has the ontology available in its prompt and the resolver has terms
+    to map mentions onto. ``extra_prefixes`` are added to the discovery
+    config's ``base_prefixes`` so domain-specific shortcuts (dcat, sosa,
+    geo, …) are exposed without modifying the protected default-prefix
+    set.
     """
+    sources = sum(1 for src in (graph_path, endpoint_url, endpoint) if src is not None)
+    if sources == 0:
+        raise ValueError("build_components requires one of graph_path, endpoint_url, or endpoint")
+    if sources > 1:
+        raise ValueError(
+            "build_components requires exactly one graph source; "
+            "specify graph_path OR endpoint_url OR endpoint"
+        )
+
     settings = settings or Settings(allow_unbounded_paths=True)
     policy = SecurityPolicy.from_settings(settings)
     validator = QueryPlanValidator(policy)
     renderer = SparqlRenderer(policy)
-    endpoint = LocalRdflibEndpoint.from_rdf_file(graph_path)
-    discovery = SparqlSchemaProvider(endpoint)
+
+    chosen_endpoint: GraphEndpoint
+    if graph_path is not None:
+        chosen_endpoint = LocalRdflibEndpoint.from_rdf_file(graph_path)
+    elif endpoint_url is not None:
+        chosen_endpoint = HttpSparqlEndpoint(endpoint_url, auth=auth)
+    else:
+        assert endpoint is not None  # narrowed by the source-count check
+        chosen_endpoint = endpoint
+
+    base_prefixes = dict(DEFAULT_PREFIXES)
+    if extra_prefixes:
+        base_prefixes.update(extra_prefixes)
+    discovery_config = SparqlDiscoveryConfig(base_prefixes=base_prefixes)
+    discovery = SparqlSchemaProvider(chosen_endpoint, discovery_config)
     snapshot = await discovery.refresh()
     schema_provider: SchemaProvider = StaticSchemaProvider(snapshot)
     resolver = TermResolver(schema_provider)
@@ -772,8 +819,13 @@ async def build_components(
         renderer=renderer,
         schema_provider=schema_provider,
         resolver=resolver,
-        endpoint=endpoint,
+        endpoint=chosen_endpoint,
     )
+
+
+# Re-export so callers can splice ocean prefixes into build_components without
+# importing from graph_mcp.models directly.
+__all_ocean_prefixes__ = OCEAN_KG_PREFIXES
 
 
 def make_planner(

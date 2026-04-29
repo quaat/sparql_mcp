@@ -56,7 +56,12 @@ class GraphEndpoint(Protocol):
 
 
 class HttpSparqlEndpoint:
-    """SPARQL 1.1 endpoint over HTTP."""
+    """SPARQL 1.1 endpoint over HTTP.
+
+    ``auth`` is forwarded to ``httpx`` so callers can configure Basic Auth
+    (or any ``httpx.Auth`` instance) without us reaching for raw headers.
+    The credentials are kept on the underlying client and never logged.
+    """
 
     def __init__(
         self,
@@ -64,10 +69,19 @@ class HttpSparqlEndpoint:
         *,
         client: httpx.AsyncClient | None = None,
         default_headers: dict[str, str] | None = None,
+        auth: tuple[str, str] | httpx.Auth | None = None,
     ) -> None:
         self.url = url
         self._owns_client = client is None
-        self._client = client or httpx.AsyncClient()
+        if client is not None:
+            self._client = client
+            # Caller-supplied client is authoritative; we don't override its
+            # auth even when ``auth`` is set, since the client may already
+            # be configured with a richer auth flow.
+            self._auth: tuple[str, str] | httpx.Auth | None = None
+        else:
+            self._client = httpx.AsyncClient(auth=auth)
+            self._auth = auth
         self._select_headers = {
             "Accept": "application/sparql-results+json",
             "User-Agent": "graph-mcp/0.1",

@@ -21,7 +21,8 @@ LANG_TAG_REGEX = re.compile(r"^[A-Za-z]{1,8}(?:-[A-Za-z0-9]{1,8})*$")
 # Acceptable absolute IRI scheme. We intentionally reject relative IRIs.
 ABSOLUTE_IRI_REGEX = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*:[^\s<>\"{}|\\^`]+$")
 
-# Common, well-known prefixes safe to expose by default.
+# Common, well-known prefixes safe to expose by default. These are also
+# the set the validator and renderer protect from override.
 DEFAULT_PREFIXES: dict[str, str] = {
     "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#",
     "rdfs": "http://www.w3.org/2000/01/rdf-schema#",
@@ -30,4 +31,20 @@ DEFAULT_PREFIXES: dict[str, str] = {
     "skos": "http://www.w3.org/2004/02/skos/core#",
     "dct": "http://purl.org/dc/terms/",
     "foaf": "http://xmlns.com/foaf/0.1/",
+}
+
+# Domain-specific prefixes the eval harness advertises to schema discovery
+# and to the prompt builder when a dataset is known to use them. They are
+# *not* added to :data:`DEFAULT_PREFIXES` so the validator's default-prefix
+# override protection stays exactly as before — these can be passed through
+# :class:`graph_mcp.graph.schema_discovery.SparqlDiscoveryConfig.base_prefixes`
+# and embedded in plans without locking out users who define their own.
+OCEAN_KG_PREFIXES: dict[str, str] = {
+    "dcat": "http://www.w3.org/ns/dcat#",
+    "dcterms": "http://purl.org/dc/terms/",
+    "geo": "http://www.opengis.net/ont/geosparql#",
+    "prov": "http://www.w3.org/ns/prov#",
+    "sosa": "http://www.w3.org/ns/sosa/",
+    "app": "https://example.org/ontology/app#",
+    "var": "https://example.org/ocean-demo/id/observable-property/",
 }

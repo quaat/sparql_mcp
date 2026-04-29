@@ -141,6 +141,53 @@ python -m evals_rag.runner \
   --report-dir reports/rag-qdrant
 ```
 
+### Live SPARQL endpoint (Fuseki / etc.)
+
+```bash
+export GRAPH_MCP_ENDPOINT_URL="http://localhost:3030/ocean/sparql"
+# Optional Basic Auth — the password is read from the named env var only.
+export FUSEKI_ADMIN_USER="admin"
+export FUSEKI_ADMIN_PASSWORD="…"
+
+python -m evals_rag.runner \
+  --planner rag \
+  --retriever mock \
+  --reranker heuristic \
+  --graph-source sparql \
+  --endpoint-url "$GRAPH_MCP_ENDPOINT_URL" \
+  --endpoint-user "$FUSEKI_ADMIN_USER" \
+  --endpoint-password-env FUSEKI_ADMIN_PASSWORD \
+  --cases evals_rag/ocean_golden_cases.yaml \
+  --report-dir reports/ocean-fuseki-smoke
+```
+
+When `--graph-source sparql` is used:
+
+- `--endpoint-url` (or `GRAPH_MCP_ENDPOINT_URL`) is required.
+- `--sparql-update-url` (or `GRAPH_MCP_SPARQL_UPDATE_URL`) is recorded in
+  the report; the eval runner itself never issues updates.
+- Schema discovery runs against the live endpoint with a base-prefix
+  block that includes the ocean vocabulary (dcat / dcterms / geo / prov /
+  sosa / app / var) so the LLM and the validator both see them. These
+  prefixes are advertised, not added to the validator's protected
+  default-prefix override list — plans are still free to declare them
+  themselves.
+- `--endpoint-user` + `--endpoint-password-env` enable Basic Auth. The
+  password itself is **never** read from a CLI flag.
+
+Two convenience scripts wrap the most common workflows:
+
+```bash
+# Pure SPARQL smoke — confirms the live KG actually answers the raw
+# queries. No LLM, no eval harness.
+python scripts/run_ocean_fuseki_smoke.py
+
+# Free-text RAG smoke — discovers schema, builds candidate packs from
+# the live snapshot, and runs evals_rag against
+# `evals_rag/ocean_golden_cases.yaml`.
+python scripts/run_ocean_rag_smoke.py [--azure --model …]
+```
+
 ### Quality-gated CI
 
 ```bash
