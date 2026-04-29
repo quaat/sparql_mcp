@@ -61,18 +61,56 @@ def _term_str(term: object, prefixes: dict[str, str] | None = None) -> str:
     return str(term)
 
 
-def _matches_slot(spec_slot: str, actual: str) -> bool:
+# Built-in prefixes the structural matcher can always expand. Plan-level
+# prefixes (gathered from a ``QueryPlan.prefixes`` list at match time) are
+# layered on top of these, so an ``ex:Acme`` spec matches a plan that uses
+# ``<http://example.org/Acme>``.
+_BUILTIN_PREFIXES: dict[str, str] = {
+    "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#",
+    "rdfs": "http://www.w3.org/2000/01/rdf-schema#",
+    "xsd": "http://www.w3.org/2001/XMLSchema#",
+    "owl": "http://www.w3.org/2002/07/owl#",
+    "ex": "http://example.org/",
+    "foaf": "http://xmlns.com/foaf/0.1/",
+    "skos": "http://www.w3.org/2004/02/skos/core#",
+    "dct": "http://purl.org/dc/terms/",
+}
+
+
+def _normalize_term(text: str, prefixes: dict[str, str] | None) -> str:
+    """Expand ``prefix:local`` to a full IRI when a prefix is known."""
+    if ":" not in text or text.startswith(("?", "$", "<", "http://", "https://")):
+        return text
+    prefix, _, local = text.partition(":")
+    base = (prefixes or {}).get(prefix) or _BUILTIN_PREFIXES.get(prefix)
+    return f"{base}{local}" if base else text
+
+
+def _matches_slot(spec_slot: str, actual: str, *, prefixes: dict[str, str] | None = None) -> bool:
     """Match one triple-slot specification against an actual term.
 
     A spec slot starting with ``?`` or ``$`` matches any variable in that
     slot (regardless of name). A spec slot of ``?_`` is the wildcard.
-    Otherwise the slot must equal the actual term verbatim.
+    Otherwise the slot is normalized to absolute-IRI form (using the plan's
+    prefixes plus a builtin set) before being compared verbatim, so the
+    matcher accepts both ``ex:Acme`` and ``http://example.org/Acme``.
     """
     if spec_slot.startswith("?_"):
         return True
     if spec_slot.startswith(("?", "$")):
         return actual.startswith(("?", "$"))
-    return spec_slot == actual
+    return _normalize_term(spec_slot, prefixes) == _normalize_term(actual, prefixes)
+
+
+def _plan_prefixes(plan: object) -> dict[str, str]:
+    """Collect ``prefix → IRI`` declarations from a plan."""
+    out: dict[str, str] = {}
+    for p in getattr(plan, "prefixes", None) or []:
+        prefix = getattr(p, "prefix", None)
+        iri = getattr(p, "iri", None)
+        if prefix and iri:
+            out[prefix] = iri
+    return out
 
 
 def _walk_patterns(patterns: list[Pattern]) -> list[Pattern]:
@@ -141,17 +179,18 @@ def collect_pattern_kinds(plan: QueryPlan) -> set[str]:
 def count_matching_triples(plan: QueryPlan, spec: TripleSpec) -> int:
     """Count triples in the plan that match the spec."""
     count = 0
+    prefixes = _plan_prefixes(plan)
     where = list(getattr(plan, "where", []))
     for p in _walk_patterns(where):
         if not isinstance(p, TriplePattern):
             continue
-        if _matches_slot(spec.subject, _term_str(p.subject)) and _matches_slot(
-            spec.object, _term_str(p.object)
+        if _matches_slot(spec.subject, _term_str(p.subject), prefixes=prefixes) and _matches_slot(
+            spec.object, _term_str(p.object), prefixes=prefixes
         ):
             # Predicate may be a property path; in that case match only when
             # the spec is a wildcard variable.
             if isinstance(p.predicate, (Iri, PrefixedName, Var)):
-                if _matches_slot(spec.predicate, _term_str(p.predicate)):
+                if _matches_slot(spec.predicate, _term_str(p.predicate), prefixes=prefixes):
                     count += 1
             else:
                 # Property path predicate: only wildcard specs match.
@@ -269,10 +308,19 @@ def _is_compare(expr: Any, op: str, var: str | None, value: Any) -> bool:
 
 
 def find_matching_aggregate(plan: QueryPlan, spec: AggregateSpec) -> bool:
-    if not isinstance(plan, SelectPlan):
-        return False
-    for proj in plan.projection:
-        if proj.expression is None:
+    """Find a matching aggregate anywhere in the plan, including nested subqueries."""
+    if _projection_has_matching_aggregate(getattr(plan, "projection", []), spec):
+        return True
+    # Walk subqueries that may live in the WHERE clause.
+    for p in _walk_patterns(list(getattr(plan, "where", []))):
+        if isinstance(p, SubqueryPattern) and find_matching_aggregate(p.select, spec):
+            return True
+    return False
+
+
+def _projection_has_matching_aggregate(projection: list[Any], spec: AggregateSpec) -> bool:
+    for proj in projection:
+        if getattr(proj, "expression", None) is None:
             continue
         agg = _find_aggregate(proj.expression, spec.function)
         if agg is None:
@@ -327,6 +375,71 @@ def has_order_by(plan: QueryPlan, spec: OrderBySpec) -> bool:
 # --- Binding accuracy ----------------------------------------------------
 
 
-def matches_bindings(actual_rows: list[dict[str, str]], expected: dict[str, str]) -> bool:
-    """Return True if ``expected`` is a subset of any actual row."""
-    return any(all(row.get(k) == v for k, v in expected.items()) for row in actual_rows)
+def _expand_prefixed(value: str, prefixes: dict[str, str] | None) -> str:
+    """Expand ``prefix:local`` to a full IRI when ``prefix`` is in ``prefixes``."""
+    if not prefixes or ":" not in value or value.startswith(("http://", "https://")):
+        return value
+    prefix, _, local = value.partition(":")
+    base = prefixes.get(prefix)
+    if base is None:
+        return value
+    return f"{base}{local}"
+
+
+def _is_numeric(s: str) -> bool:
+    try:
+        float(s)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+def _values_match(expected: str, actual: str, *, prefixes: dict[str, str] | None) -> bool:
+    """Compare a single binding value, handling IRIs, numerics, and literals.
+
+    The matcher is intentionally permissive: rdflib normalizes typed literals
+    in ways that may differ from the IRI form a golden case writes
+    (``http://example.org/alice`` vs ``ex:alice``). It accepts:
+
+    - exact string equality;
+    - prefixed-name expansion in either direction;
+    - numeric equality (``2`` matches ``2.0`` and ``"2"^^xsd:integer``);
+    - typed-literal lexical match after stripping a trailing ``^^<datatype>``.
+    """
+    if expected == actual:
+        return True
+
+    expanded_expected = _expand_prefixed(expected, prefixes)
+    expanded_actual = _expand_prefixed(actual, prefixes)
+    if expanded_expected == expanded_actual:
+        return True
+
+    # Numeric comparison.
+    if _is_numeric(expected) and _is_numeric(actual):
+        return float(expected) == float(actual)
+
+    # Strip ``"value"^^<datatype>`` syntax from either side.
+    def _lex(s: str) -> str:
+        if s.startswith('"') and '"^^' in s:
+            return s[1 : s.index('"^^')]
+        return s
+
+    return _lex(expected) == _lex(actual)
+
+
+def matches_bindings(
+    actual_rows: list[dict[str, str]],
+    expected: dict[str, str],
+    *,
+    prefixes: dict[str, str] | None = None,
+) -> bool:
+    """Return True if ``expected`` is a subset of any actual row.
+
+    ``prefixes`` lets callers expand ``ex:alice`` to ``http://example.org/alice``
+    when comparing — useful because the golden cases use prefixed names but
+    rdflib emits absolute IRIs.
+    """
+    return any(
+        all(_values_match(v, row.get(k, ""), prefixes=prefixes) for k, v in expected.items())
+        for row in actual_rows
+    )

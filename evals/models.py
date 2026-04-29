@@ -2,26 +2,71 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from graph_mcp.graph.term_resolver import TermCandidate
 from graph_mcp.models import QueryPlan
+from graph_mcp.models.validation import ValidationIssue
 
 
-class PlanGenerationOutput(BaseModel):
-    """The strict output type a planner agent must produce."""
-
+class _PlannerOutputBase(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     question: str
     assumptions: list[str] = Field(default_factory=list)
     resolved_terms: list[TermCandidate] = Field(default_factory=list)
-    plan: QueryPlan
     confidence: float = Field(ge=0.0, le=1.0)
-    needs_clarification: bool = False
-    clarification_question: str | None = None
+
+
+class PlannedOutput(_PlannerOutputBase):
+    """The planner produced a concrete, executable :class:`QueryPlan`."""
+
+    status: Literal["planned"] = "planned"
+    plan: QueryPlan
+
+
+class ClarificationOutput(_PlannerOutputBase):
+    """The planner needs the user to clarify before proceeding."""
+
+    status: Literal["needs_clarification"] = "needs_clarification"
+    clarification_question: str
+
+
+class RefusedOutput(_PlannerOutputBase):
+    """The planner refused to plan because the request is unsafe / out-of-policy."""
+
+    status: Literal["refused"] = "refused"
+    refusal_reason: str
+    policy_code: str | None = None
+
+
+PlanGenerationOutput = Annotated[
+    PlannedOutput | ClarificationOutput | RefusedOutput,
+    Field(discriminator="status"),
+]
+"""Discriminated union of every shape a planner may return.
+
+Construct one of the three concrete classes (:class:`PlannedOutput`,
+:class:`ClarificationOutput`, :class:`RefusedOutput`). Use this annotated
+alias only as a type — never as a constructor.
+"""
+
+
+def is_planned(out: PlannedOutput | ClarificationOutput | RefusedOutput) -> bool:
+    return out.status == "planned"
+
+
+def is_clarification(out: PlannedOutput | ClarificationOutput | RefusedOutput) -> bool:
+    return out.status == "needs_clarification"
+
+
+def is_refused(out: PlannedOutput | ClarificationOutput | RefusedOutput) -> bool:
+    return out.status == "refused"
+
+
+# --- Golden-case structural matchers ---------------------------------------
 
 
 class TripleSpec(BaseModel):
@@ -86,20 +131,22 @@ class BindingSpec(BaseModel):
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    # Free-form mapping; arbitrary variable names → expected IRI/literal.
-    # Implemented as a generic ``dict[str, str]`` so cases stay readable.
     bindings: dict[str, str] = Field(default_factory=dict)
 
 
 class GoldenCaseExpected(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    # Legacy lightweight fields (kept for back-compat).
+    # Legacy lightweight fields. These are now treated as **presentation**
+    # signals only — they never fail a case on their own. Use the IR-level
+    # structural fields below for semantic correctness.
     required_patterns: list[str] = Field(default_factory=list)
-    """Pattern kind names (e.g. ``filter``, ``optional``) that must appear in the plan."""
+    """Pattern kind names (e.g. ``filter``, ``optional``) that must appear in the plan.
+    Presentation-only; missing patterns are reported as warnings."""
 
     required_terms: list[str] = Field(default_factory=list)
-    """Tokens (IRIs, prefixed names, or SPARQL keywords) that must appear in the rendered SPARQL."""
+    """Tokens that must appear in the rendered SPARQL. Presentation-only;
+    missing terms are reported as warnings, not failures."""
 
     forbidden_features: list[str] = Field(default_factory=list)
     """Features that must NOT appear (e.g. ``raw_sparql``, ``service``)."""
@@ -108,38 +155,31 @@ class GoldenCaseExpected(BaseModel):
     """Execution-result expectations: ``min_rows``, ``max_rows``, ``ask``."""
 
     expect_invalid: bool = False
-    """If true, the case must FAIL validation (used for safety/unsafe-request cases)."""
+    """If true, the case is expected to be rejected by the planner (refusal)
+    or by the validator (invalid plan). The new path prefers a planner
+    refusal, but legacy cases that produce a deliberately invalid plan still
+    pass through the validator-rejection branch."""
 
     expect_clarification: bool = False
-    """If true, the planner is expected to set ``needs_clarification=True``."""
+    """If true, the planner is expected to return a ``ClarificationOutput``."""
 
-    # New IR-level structural requirements. Cases that set these score on the
-    # deeper metrics; the legacy fields are still summed into the simple
-    # ``required_feature_recall`` so old cases keep working.
+    # IR-level structural requirements. Cases that set these score on the
+    # deeper metrics; the legacy fields above remain as presentation warnings.
     required_pattern_kinds: list[str] = Field(default_factory=list)
     """Pattern kinds that must appear *anywhere* in the plan tree."""
 
     required_triples: list[TripleSpec] = Field(default_factory=list)
-    """Triple templates that must appear in the WHERE clause (any depth).
-
-    Variable position is matched by *role* (``?p`` matches any variable in the
-    same slot), so the eval is robust to the planner's choice of variable name.
-    Use a literal IRI/prefixed name to require a specific term.
-    """
+    """Triple templates that must appear in the WHERE clause (any depth)."""
 
     required_filters: list[FilterSpec] = Field(default_factory=list)
     required_aggregates: list[AggregateSpec] = Field(default_factory=list)
     required_group_by: list[str] = Field(default_factory=list)
-    """List of variables (``?x``) or expressions expected in GROUP BY."""
-
     required_order_by: list[OrderBySpec] = Field(default_factory=list)
     forbidden_pattern_kinds: list[str] = Field(default_factory=list)
     expected_bindings: list[dict[str, str]] = Field(default_factory=list)
     """Expected binding rows. Each row is a dict ``{var_name: iri-or-literal}``.
-
     Matching is set-style: every expected row must appear in the result, but
-    the result may contain additional rows.
-    """
+    the result may contain additional rows."""
 
 
 class GoldenCase(BaseModel):
@@ -162,7 +202,10 @@ class CaseResult(BaseModel):
     executed: bool = False
     row_count: int | None = None
     failures: list[str] = Field(default_factory=list)
+    """Semantic failures that fail the case."""
+
     warnings: list[str] = Field(default_factory=list)
+    """Validator warnings or presentation warnings (do NOT fail the case)."""
 
     # --- Structural metric inputs (set by the runner) -------------------
     required_features_total: int = 0
@@ -173,6 +216,7 @@ class CaseResult(BaseModel):
     expected_terms_present: int = 0
     repair_attempted: bool = False
     repair_succeeded: bool = False
+    repair_attempts: int = 0
 
     # IR-level structural recall (deeper metrics)
     triple_total: int = 0
@@ -194,6 +238,26 @@ class CaseResult(BaseModel):
     clarification_correct: bool = False
     is_unsafe_request_case: bool = False
     unsafe_request_rejected: bool = False
+
+    # --- New rich diagnostics for §10 reports ----------------------------
+    planner_status: str | None = None
+    """``"planned"``, ``"needs_clarification"``, or ``"refused"`` — the
+    planner's structured status field."""
+
+    planner_confidence: float | None = None
+    planner_assumptions: list[str] = Field(default_factory=list)
+    resolved_terms: list[TermCandidate] = Field(default_factory=list)
+    generated_plan_json: dict[str, Any] | None = None
+    validation_errors: list[ValidationIssue] = Field(default_factory=list)
+    validation_warnings: list[ValidationIssue] = Field(default_factory=list)
+    execution_rows: list[dict[str, str]] = Field(default_factory=list)
+    semantic_failures: list[str] = Field(default_factory=list)
+    presentation_warnings: list[str] = Field(default_factory=list)
+    extracted_mentions: list[str] = Field(default_factory=list)
+    unresolved_mentions: list[str] = Field(default_factory=list)
+    refusal_reason: str | None = None
+    clarification_question: str | None = None
+    policy_code: str | None = None
 
 
 class EvaluationReport(BaseModel):

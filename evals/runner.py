@@ -1,4 +1,11 @@
-"""Eval runner CLI: load cases, run planner, validate/render/execute, score."""
+"""Eval runner CLI: load cases, run planner, validate/render/execute, score.
+
+The runner builds the validator, renderer, policy, schema provider, and
+resolver once, then constructs the planner with all of those wired in. This
+is what the v6 live eval was missing: ``make_planner`` used to call
+``build_pydantic_ai_planner(model, schema=schema)`` without the dependency
+context, so the workflow (validation, repair, term resolution) was bypassed.
+"""
 
 from __future__ import annotations
 
@@ -8,32 +15,49 @@ import json
 import os
 import sys
 from collections.abc import Iterable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-from evals.agent import DeterministicPlanner, Planner, build_pydantic_ai_planner
+from evals.agent import (
+    DeterministicPlanner,
+    Planner,
+    PlannerOutput,
+    build_pydantic_ai_planner,
+)
 from evals.metrics import compute_metrics
-from evals.models import CaseResult, EvaluationReport, GoldenCase
+from evals.models import (
+    CaseResult,
+    ClarificationOutput,
+    EvaluationReport,
+    GoldenCase,
+    PlannedOutput,
+    RefusedOutput,
+)
 from graph_mcp.compiler import QueryPlanValidator, SparqlRenderer
 from graph_mcp.config import Settings
 from graph_mcp.graph import LocalRdflibEndpoint
+from graph_mcp.graph.schema_discovery import (
+    SchemaProvider,
+    SparqlSchemaProvider,
+    StaticSchemaProvider,
+)
+from graph_mcp.graph.term_resolver import TermResolver
 from graph_mcp.security import SecurityPolicy
 
 _DEFAULT_GRAPH = Path(__file__).parent / "sample_graph.ttl"
 _DEFAULT_CASES = Path(__file__).parent / "golden_cases.yaml"
 
-_AZURE_DEFAULT_ENDPOINT = "https://oceanai-dev-swe-01-fo.services.ai.azure.com/openai/v1"
-_AZURE_DEFAULT_MODEL = "gpt-5.5-1"
 
-
-def _build_azure_openai_model(model_name: str | None = None) -> Any:
+def _build_azure_openai_model(model_name: str | None = None, *, endpoint: str | None = None) -> Any:
     """Build an Azure-backed pydantic-ai model.
 
-    Reads the API key from ``AZURE_OPENAI_API_KEY``. Endpoint and model name
-    fall back to the defaults baked into this module but can be overridden
-    via ``AZURE_OPENAI_ENDPOINT`` and ``AZURE_OPENAI_MODEL``.
+    Endpoint, model, and key are all required: the runner never bakes in a
+    private organization endpoint. Pass values via environment variables
+    (``AZURE_OPENAI_API_KEY``, ``AZURE_OPENAI_ENDPOINT``, ``AZURE_OPENAI_MODEL``)
+    or via the ``--azure-endpoint`` / ``--model`` CLI flags.
     """
     from pydantic_ai.models.openai import OpenAIChatModel
     from pydantic_ai.providers.azure import AzureProvider
@@ -44,9 +68,15 @@ def _build_azure_openai_model(model_name: str | None = None) -> Any:
             "AZURE_OPENAI_API_KEY environment variable is not set; "
             "export it before running with --azure"
         )
-    endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT", _AZURE_DEFAULT_ENDPOINT)
-    name = model_name or os.environ.get("AZURE_OPENAI_MODEL") or _AZURE_DEFAULT_MODEL
-    provider = AzureProvider(azure_endpoint=endpoint, api_key=api_key)
+    resolved_endpoint = endpoint or os.environ.get("AZURE_OPENAI_ENDPOINT")
+    if not resolved_endpoint:
+        raise RuntimeError(
+            "Azure endpoint is required: set AZURE_OPENAI_ENDPOINT or pass --azure-endpoint"
+        )
+    name = model_name or os.environ.get("AZURE_OPENAI_MODEL")
+    if not name:
+        raise RuntimeError("Azure model name is required: set AZURE_OPENAI_MODEL or pass --model")
+    provider = AzureProvider(azure_endpoint=resolved_endpoint, api_key=api_key)
     return OpenAIChatModel(name, provider=provider)
 
 
@@ -55,6 +85,31 @@ def load_cases(path: str | Path) -> list[GoldenCase]:
     if not isinstance(raw, list):
         raise ValueError(f"expected list of cases, got {type(raw).__name__}")
     return [GoldenCase.model_validate(c) for c in raw]
+
+
+# --- Per-case execution ----------------------------------------------------
+
+
+def _attach_diagnostics(result: CaseResult, planner: Planner, output: PlannerOutput) -> None:
+    """Copy the workflow diagnostics + planner output onto the case result."""
+    diag = getattr(planner, "last_diagnostics", None)
+    if diag is not None:
+        result.extracted_mentions = list(diag.extracted_mentions)
+        result.unresolved_mentions = list(diag.unresolved_mentions)
+        result.validation_errors = list(diag.validation_errors_seen)
+        result.repair_attempts = diag.repair_attempts
+        result.rendered_sparql = result.rendered_sparql or diag.rendered_sparql
+    result.planner_status = output.status
+    result.planner_confidence = output.confidence
+    result.planner_assumptions = list(output.assumptions)
+    result.resolved_terms = list(output.resolved_terms)
+    if isinstance(output, PlannedOutput):
+        result.generated_plan_json = output.plan.model_dump()
+    if isinstance(output, ClarificationOutput):
+        result.clarification_question = output.clarification_question
+    if isinstance(output, RefusedOutput):
+        result.refusal_reason = output.refusal_reason
+        result.policy_code = output.policy_code
 
 
 async def run_one(
@@ -67,8 +122,8 @@ async def run_one(
     policy: SecurityPolicy,
     execute: bool = True,
 ) -> CaseResult:
-    failures: list[str] = []
-    warnings: list[str] = []
+    semantic_failures: list[str] = []
+    presentation_warnings: list[str] = []
     plan_generated = False
     plan_valid = False
     rendered_sparql: str | None = None
@@ -76,75 +131,119 @@ async def run_one(
     row_count: int | None = None
 
     try:
-        # Run in a thread so planners that use ``agent.run_sync`` (which
-        # internally calls ``loop.run_until_complete``) don't collide with
-        # the runner's own asyncio loop.
         out = await asyncio.to_thread(planner.plan, case.question)
         plan_generated = True
     except Exception as exc:
-        failures.append(f"PLAN_ERROR: {exc}")
-        return CaseResult(
+        result = CaseResult(
             case_id=case.id,
             question=case.question,
             plan_generated=False,
             plan_valid=False,
-            failures=failures,
         )
+        result.semantic_failures = [f"PLAN_ERROR: {exc}"]
+        result.failures = list(result.semantic_failures)
+        return result
 
+    # --- Clarification expectation ---------------------------------------
     if case.expected.expect_clarification:
-        clarif_correct = bool(out.needs_clarification)
-        if not clarif_correct:
-            failures.append("EXPECTED_CLARIFICATION: planner did not request clarification")
-        return CaseResult(
+        clarif_correct = isinstance(out, ClarificationOutput)
+        result = CaseResult(
             case_id=case.id,
             question=case.question,
             plan_generated=plan_generated,
             plan_valid=False,
-            failures=failures,
             is_clarification_case=True,
             clarification_correct=clarif_correct,
         )
+        if not clarif_correct:
+            semantic_failures.append(
+                f"EXPECTED_CLARIFICATION: planner returned status={out.status!r}"
+            )
+        result.semantic_failures = semantic_failures
+        result.failures = list(semantic_failures)
+        _attach_diagnostics(result, planner, out)
+        return result
 
-    res = validator.validate(out.plan)
-    plan_valid = res.ok
-    warnings.extend(f"{w.code}: {w.message}" for w in res.warnings)
-
+    # --- Refusal / unsafe expectation ------------------------------------
     if case.expected.expect_invalid:
-        rejected = not res.ok
-        if not rejected:
-            failures.append("EXPECTED_INVALID: validator accepted an unsafe plan")
-        # forbidden features still apply
-        if "raw_sparql" in case.expected.forbidden_features and "raw" in case.question.lower():
-            # The planner cannot produce a raw SPARQL string; the IR makes
-            # that impossible by construction, so this is a pass.
-            pass
-        return CaseResult(
+        rejected = False
+        plan_valid_for_unsafe = False
+        if isinstance(out, RefusedOutput):
+            rejected = True  # planner refused — preferred path
+        elif isinstance(out, PlannedOutput):
+            res = validator.validate(out.plan)
+            plan_valid_for_unsafe = res.ok
+            rejected = not res.ok  # validator rejected
+        result = CaseResult(
             case_id=case.id,
             question=case.question,
             plan_generated=plan_generated,
-            plan_valid=plan_valid,
-            failures=failures,
-            warnings=warnings,
+            plan_valid=plan_valid_for_unsafe,
             is_unsafe_request_case=True,
             unsafe_request_rejected=rejected,
         )
+        if not rejected:
+            semantic_failures.append(
+                "EXPECTED_REFUSAL_OR_INVALID: planner produced a valid plan for an unsafe request"
+            )
+        # Forbidden-feature accounting: the IR already prohibits raw_sparql by
+        # construction, so we treat raw_sparql as a pass.
+        result.semantic_failures = semantic_failures
+        result.failures = list(semantic_failures)
+        _attach_diagnostics(result, planner, out)
+        return result
 
-    if not res.ok:
-        failures.append("INVALID_PLAN: " + "; ".join(f"{e.code}: {e.message}" for e in res.errors))
-        return CaseResult(
+    # --- Normal queries: planner must have produced a PlannedOutput ------
+    if not isinstance(out, PlannedOutput):
+        # The planner refused or asked for clarification on a normal case.
+        if isinstance(out, RefusedOutput):
+            semantic_failures.append(
+                f"UNEXPECTED_REFUSAL: planner refused a normal case ({out.refusal_reason!r})"
+            )
+        else:
+            semantic_failures.append(
+                "UNEXPECTED_CLARIFICATION: planner asked for clarification on a normal case"
+            )
+        result = CaseResult(
             case_id=case.id,
             question=case.question,
             plan_generated=plan_generated,
             plan_valid=False,
-            failures=failures,
-            warnings=warnings,
         )
+        result.semantic_failures = semantic_failures
+        result.failures = list(semantic_failures)
+        _attach_diagnostics(result, planner, out)
+        return result
+
+    # --- Validate the plan -----------------------------------------------
+    res = validator.validate(out.plan)
+    plan_valid = res.ok
+    presentation_warnings.extend(f"{w.code}: {w.message}" for w in res.warnings)
+
+    if not res.ok:
+        semantic_failures.append(
+            "INVALID_PLAN: " + "; ".join(f"{e.code}: {e.message}" for e in res.errors)
+        )
+        result = CaseResult(
+            case_id=case.id,
+            question=case.question,
+            plan_generated=plan_generated,
+            plan_valid=False,
+        )
+        result.semantic_failures = semantic_failures
+        result.failures = list(semantic_failures)
+        result.warnings = list(presentation_warnings)
+        result.validation_errors = list(res.errors)
+        result.validation_warnings = list(res.warnings)
+        _attach_diagnostics(result, planner, out)
+        return result
 
     rendered = renderer.render(out.plan)
     rendered_sparql = rendered.sparql
 
-    # --- legacy structural checks (rendered-string substring matches) ---
     expected = case.expected
+
+    # --- Legacy / presentation checks (warnings only) --------------------
     pattern_names = {p.lower() for p in expected.required_patterns}
     rf_total = len(pattern_names) + len(expected.required_terms)
     rf_present = 0
@@ -155,13 +254,13 @@ async def run_one(
         missing = pattern_names - present
         rf_present += len(pattern_names) - len(missing)
         if missing:
-            failures.append(f"MISSING_PATTERNS: {sorted(missing)}")
+            presentation_warnings.append(f"MISSING_PATTERNS: {sorted(missing)}")
     for term in expected.required_terms:
         if term in rendered.sparql:
             rf_present += 1
             et_present += 1
         else:
-            failures.append(f"MISSING_TERM: {term!r} not in rendered SPARQL")
+            presentation_warnings.append(f"MISSING_TERM: {term!r} not in rendered SPARQL")
     ff_total = 0
     ff_violated = 0
     for forbidden in expected.forbidden_features:
@@ -171,9 +270,9 @@ async def run_one(
         ff_total += 1
         if forbidden == "service" and "SERVICE" in rendered.sparql.upper():
             ff_violated += 1
-            failures.append("SAFETY: SERVICE used")
+            semantic_failures.append("SAFETY: SERVICE used")
 
-    # --- IR-level structural checks (deep matching) ---------------------
+    # --- IR-level structural checks (semantic — fail the case) -----------
     from evals.structural import (
         collect_pattern_kinds,
         count_matching_triples,
@@ -185,106 +284,102 @@ async def run_one(
 
     plan_kinds = collect_pattern_kinds(out.plan)
 
-    # required_pattern_kinds (deep-walk version of required_patterns).
     rpk_total = len(expected.required_pattern_kinds)
     rpk_present = sum(1 for k in expected.required_pattern_kinds if k.lower() in plan_kinds)
     if rpk_total and rpk_present < rpk_total:
         missing_kinds = [k for k in expected.required_pattern_kinds if k.lower() not in plan_kinds]
-        failures.append(f"MISSING_KINDS: {sorted(missing_kinds)}")
+        semantic_failures.append(f"MISSING_KINDS: {sorted(missing_kinds)}")
 
-    # forbidden_pattern_kinds.
     fpk_total = len(expected.forbidden_pattern_kinds)
     fpk_violated = sum(1 for k in expected.forbidden_pattern_kinds if k.lower() in plan_kinds)
     if fpk_violated:
-        failures.append(
+        semantic_failures.append(
             "SAFETY: forbidden pattern kinds present: "
             + ", ".join(k for k in expected.forbidden_pattern_kinds if k.lower() in plan_kinds)
         )
 
-    # required_triples
     triple_total = len(expected.required_triples)
     triple_present = 0
     for spec in expected.required_triples:
         if count_matching_triples(out.plan, spec) >= 1:
             triple_present += 1
         else:
-            failures.append(f"MISSING_TRIPLE: <{spec.subject} {spec.predicate} {spec.object}>")
+            semantic_failures.append(
+                f"MISSING_TRIPLE: <{spec.subject} {spec.predicate} {spec.object}>"
+            )
 
-    # required_filters
     filter_total = len(expected.required_filters)
     filter_present = 0
     for fspec in expected.required_filters:
         if has_filter(out.plan, fspec):
             filter_present += 1
         else:
-            failures.append(f"MISSING_FILTER: {fspec.kind}")
+            semantic_failures.append(f"MISSING_FILTER: {fspec.kind}")
 
-    # required_aggregates
     aggregate_total = len(expected.required_aggregates)
     aggregate_present = 0
     for aspec in expected.required_aggregates:
         if find_matching_aggregate(out.plan, aspec):
             aggregate_present += 1
         else:
-            failures.append(f"MISSING_AGGREGATE: {aspec.function}")
+            semantic_failures.append(f"MISSING_AGGREGATE: {aspec.function}")
 
-    # required_group_by
     gb_total = len(expected.required_group_by)
     gb_present = sum(1 for v in expected.required_group_by if has_group_by_var(out.plan, v))
     if gb_total and gb_present < gb_total:
         missing_gb = [v for v in expected.required_group_by if not has_group_by_var(out.plan, v)]
-        failures.append(f"MISSING_GROUP_BY: {missing_gb}")
+        semantic_failures.append(f"MISSING_GROUP_BY: {missing_gb}")
 
-    # required_order_by
     ob_total = len(expected.required_order_by)
     ob_present = sum(1 for o in expected.required_order_by if has_order_by(out.plan, o))
     if ob_total and ob_present < ob_total:
-        failures.append("MISSING_ORDER_BY")
+        semantic_failures.append("MISSING_ORDER_BY")
 
-    # --- execution -------------------------------------------------------
+    # --- Execution -------------------------------------------------------
     eb_total = len(expected.expected_bindings)
     eb_present = 0
+    actual_rows: list[dict[str, str]] = []
     if execute:
         try:
-            result = await endpoint.query(
+            result_q = await endpoint.query(
                 rendered.sparql,
                 query_type=rendered.query_type,
                 timeout_ms=policy.timeout_ms,
                 max_rows=policy.default_limit,
             )
             executed = True
-            actual_rows: list[dict[str, str]] = []
-            if result.kind == "select":
-                row_count = len(result.rows)
+            if result_q.kind == "select":
+                row_count = len(result_q.rows)
                 actual_rows = [
                     {var: binding.value for var, binding in row.bindings.items()}
-                    for row in result.rows
+                    for row in result_q.rows
                 ]
             exp = expected.result_expectation or {}
             if isinstance(exp, dict):
                 if "min_rows" in exp and row_count is not None and row_count < int(exp["min_rows"]):
-                    failures.append(
+                    semantic_failures.append(
                         f"RESULT_MISMATCH: expected >= {exp['min_rows']} rows, got {row_count}"
                     )
                 if "max_rows" in exp and row_count is not None and row_count > int(exp["max_rows"]):
-                    failures.append(
+                    semantic_failures.append(
                         f"RESULT_MISMATCH: expected <= {exp['max_rows']} rows, got {row_count}"
                     )
-                if "ask" in exp and result.kind == "ask" and bool(exp["ask"]) != result.boolean:
-                    failures.append(
-                        f"RESULT_MISMATCH: expected ASK={exp['ask']}, got {result.boolean}"
+                if "ask" in exp and result_q.kind == "ask" and bool(exp["ask"]) != result_q.boolean:
+                    semantic_failures.append(
+                        f"RESULT_MISMATCH: expected ASK={exp['ask']}, got {result_q.boolean}"
                     )
             from evals.structural import matches_bindings
 
+            prefixes = {p.prefix: p.iri for p in out.plan.prefixes}
             for expected_row in expected.expected_bindings:
-                if matches_bindings(actual_rows, expected_row):
+                if matches_bindings(actual_rows, expected_row, prefixes=prefixes):
                     eb_present += 1
                 else:
-                    failures.append(f"MISSING_BINDING: {expected_row}")
+                    semantic_failures.append(f"MISSING_BINDING: {expected_row}")
         except Exception as exc:
-            failures.append(f"EXECUTION_ERROR: {exc}")
+            semantic_failures.append(f"EXECUTION_ERROR: {exc}")
 
-    return CaseResult(
+    result = CaseResult(
         case_id=case.id,
         question=case.question,
         plan_generated=plan_generated,
@@ -292,8 +387,6 @@ async def run_one(
         rendered_sparql=rendered_sparql,
         executed=executed,
         row_count=row_count,
-        failures=failures,
-        warnings=warnings,
         required_features_total=rf_total + rpk_total,
         required_features_present=rf_present + rpk_present,
         forbidden_features_total=ff_total + fpk_total,
@@ -317,6 +410,15 @@ async def run_one(
         repair_attempted=bool(getattr(planner, "last_repair_attempted", False)),
         repair_succeeded=bool(getattr(planner, "last_repair_succeeded", False)),
     )
+    result.semantic_failures = semantic_failures
+    result.failures = list(semantic_failures)
+    result.presentation_warnings = list(presentation_warnings)
+    result.warnings = list(presentation_warnings)
+    result.validation_errors = list(res.errors)
+    result.validation_warnings = list(res.warnings)
+    result.execution_rows = actual_rows
+    _attach_diagnostics(result, planner, out)
+    return result
 
 
 def _pattern_kinds_in_plan(plan: Any) -> set[str]:
@@ -327,7 +429,6 @@ def _pattern_kinds_in_plan(plan: Any) -> set[str]:
         kind = getattr(p, "kind", None)
         if isinstance(kind, str):
             out.add(kind)
-        # Walk children
         for attr in ("where", "patterns", "branches", "template"):
             children = getattr(p, attr, None)
             if children is None:
@@ -345,6 +446,9 @@ def _pattern_kinds_in_plan(plan: Any) -> set[str]:
     return out
 
 
+# --- Markdown report --------------------------------------------------------
+
+
 def render_markdown_report(report: EvaluationReport) -> str:
     lines = ["# Evaluation Report", "", "## Metrics", ""]
     for k, v in sorted(report.metrics.items()):
@@ -355,86 +459,188 @@ def render_markdown_report(report: EvaluationReport) -> str:
         ok = not c.failures
         marker = "PASS" if ok else "FAIL"
         lines.append(f"### [{marker}] {c.case_id} — {c.question}")
-        if c.failures:
-            lines.append("Failures:")
-            for f in c.failures:
+        if c.planner_status:
+            lines.append(
+                f"- planner status: `{c.planner_status}`"
+                + (
+                    f" (confidence={c.planner_confidence:.2f})"
+                    if c.planner_confidence is not None
+                    else ""
+                )
+            )
+        if c.refusal_reason:
+            lines.append(f"- refusal: {c.refusal_reason}")
+        if c.clarification_question:
+            lines.append(f"- clarification: {c.clarification_question}")
+        if c.resolved_terms:
+            lines.append("- resolved terms:")
+            for t in c.resolved_terms:
+                pn = t.prefixed_name or t.iri
+                lines.append(f"  - {t.mention!r} → {pn} ({t.kind}, score={t.score:.2f})")
+        if c.extracted_mentions:
+            lines.append(f"- extracted mentions: {c.extracted_mentions}")
+        if c.unresolved_mentions:
+            lines.append(f"- unresolved mentions: {c.unresolved_mentions}")
+        if c.semantic_failures:
+            lines.append("- semantic failures:")
+            for f in c.semantic_failures:
                 lines.append(f"  - {f}")
-        if c.warnings:
-            lines.append("Warnings:")
-            for w in c.warnings:
+        if c.validation_errors:
+            lines.append("- validation errors:")
+            for e in c.validation_errors:
+                lines.append(f"  - `{e.code}`: {e.message}")
+        if c.presentation_warnings:
+            lines.append("- presentation warnings:")
+            for w in c.presentation_warnings:
                 lines.append(f"  - {w}")
+        if c.repair_attempts:
+            lines.append(
+                f"- repair attempts: {c.repair_attempts} (succeeded: {c.repair_succeeded})"
+            )
         if c.rendered_sparql:
             lines.append("```sparql")
             lines.append(c.rendered_sparql)
+            lines.append("```")
+        if c.execution_rows:
+            lines.append(f"- result rows ({c.row_count}):")
+            for row in c.execution_rows[:10]:
+                lines.append(f"  - {row}")
+        if c.generated_plan_json is not None and not c.failures:
+            # Skip plan JSON in passing cases to keep the report compact.
+            pass
+        elif c.generated_plan_json is not None:
+            lines.append("- plan JSON:")
+            lines.append("```json")
+            lines.append(json.dumps(c.generated_plan_json, indent=2, sort_keys=True))
             lines.append("```")
         lines.append("")
     return "\n".join(lines)
 
 
+# --- Planner factory --------------------------------------------------------
+
+
+@dataclass
+class PlannerComponents:
+    """Bundle of dependencies the planner needs."""
+
+    settings: Settings
+    policy: SecurityPolicy
+    validator: QueryPlanValidator
+    renderer: SparqlRenderer
+    schema_provider: SchemaProvider
+    resolver: TermResolver
+    endpoint: LocalRdflibEndpoint
+
+
+async def build_components(
+    *, graph_path: Path, settings: Settings | None = None
+) -> PlannerComponents:
+    """Construct every dependency the planner workflow needs.
+
+    The schema is discovered from the local Turtle file so the LLM planner
+    has the ontology available in its prompt and the resolver has terms to
+    map mentions onto.
+    """
+    settings = settings or Settings(allow_unbounded_paths=True)
+    policy = SecurityPolicy.from_settings(settings)
+    validator = QueryPlanValidator(policy)
+    renderer = SparqlRenderer(policy)
+    endpoint = LocalRdflibEndpoint.from_turtle_file(graph_path)
+    discovery = SparqlSchemaProvider(endpoint)
+    snapshot = await discovery.refresh()
+    schema_provider: SchemaProvider = StaticSchemaProvider(snapshot)
+    resolver = TermResolver(schema_provider)
+    return PlannerComponents(
+        settings=settings,
+        policy=policy,
+        validator=validator,
+        renderer=renderer,
+        schema_provider=schema_provider,
+        resolver=resolver,
+        endpoint=endpoint,
+    )
+
+
 def make_planner(
     name: str,
+    components: PlannerComponents,
     *,
     model: str | None = None,
     azure: bool = False,
-    schema: Any = None,
+    azure_endpoint: str | None = None,
+    examples: list[dict[str, Any]] | None = None,
+    max_repair_attempts: int = 2,
 ) -> Planner:
     if name == "deterministic":
         return DeterministicPlanner()
     if name == "pydantic-ai":
         model_obj: Any
         if azure:
-            model_obj = _build_azure_openai_model(model)
+            model_obj = _build_azure_openai_model(model, endpoint=azure_endpoint)
         else:
             if not model:
                 raise ValueError("pydantic-ai planner requires --model (or --azure)")
             model_obj = model
-        return build_pydantic_ai_planner(model_obj, schema=schema)
+        return build_pydantic_ai_planner(
+            model_obj,
+            schema=components.schema_provider,
+            validator=components.validator,
+            renderer=components.renderer,
+            policy=components.policy,
+            resolver=components.resolver,
+            examples=examples,
+            max_repair_attempts=max_repair_attempts,
+        )
     raise ValueError(f"unknown planner: {name}")
 
 
-async def _discover_schema(graph_path: Path) -> Any:
-    """Build a static schema provider from the sample graph so the LLM
-    planner has the ontology available in its system prompt."""
-    from graph_mcp.graph.schema_discovery import StaticSchemaProvider
-
-    endpoint = LocalRdflibEndpoint.from_turtle_file(graph_path)
-    from graph_mcp.graph.schema_discovery import SparqlSchemaProvider
-
-    provider = SparqlSchemaProvider(endpoint)
-    snapshot = await provider.refresh()
-    return StaticSchemaProvider(snapshot)
+# --- Main entry point ------------------------------------------------------
 
 
 async def run(
     cases: Iterable[GoldenCase],
     planner: Planner,
     *,
-    settings: Settings | None = None,
+    components: PlannerComponents,
     execute: bool = True,
-    graph_path: Path | None = None,
 ) -> EvaluationReport:
-    settings = settings or Settings(allow_unbounded_paths=True)
-    policy = SecurityPolicy.from_settings(settings)
-    validator = QueryPlanValidator(policy)
-    renderer = SparqlRenderer(policy)
-    graph_path = graph_path or _DEFAULT_GRAPH
-    endpoint = LocalRdflibEndpoint.from_turtle_file(graph_path)
-
     results: list[CaseResult] = []
     for case in cases:
         results.append(
             await run_one(
                 case,
                 planner,
-                validator=validator,
-                renderer=renderer,
-                endpoint=endpoint,
-                policy=policy,
+                validator=components.validator,
+                renderer=components.renderer,
+                endpoint=components.endpoint,
+                policy=components.policy,
                 execute=execute,
             )
         )
     metrics = compute_metrics(results)
     return EvaluationReport(cases=results, metrics=metrics)
+
+
+@dataclass
+class ThresholdSpec:
+    metric: str
+    minimum: float | None = None
+    maximum: float | None = None
+
+
+def _check_thresholds(metrics: dict[str, float], thresholds: list[ThresholdSpec]) -> list[str]:
+    """Return human-readable failure messages for metrics that miss thresholds."""
+    failures: list[str] = []
+    for spec in thresholds:
+        if spec.metric not in metrics:
+            continue
+        actual = metrics[spec.metric]
+        if spec.minimum is not None and actual < spec.minimum:
+            failures.append(f"{spec.metric}: expected >= {spec.minimum:.3f}, got {actual:.3f}")
+        if spec.maximum is not None and actual > spec.maximum:
+            failures.append(f"{spec.metric}: expected <= {spec.maximum:.3f}, got {actual:.3f}")
+    return failures
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -449,38 +655,87 @@ def main(argv: list[str] | None = None) -> int:
         "--azure",
         action="store_true",
         help=(
-            "Use Azure OpenAI as the pydantic-ai backend. Reads "
-            "AZURE_OPENAI_API_KEY from the environment; endpoint and model "
-            "default to the values baked into the runner but can be "
-            "overridden via AZURE_OPENAI_ENDPOINT / AZURE_OPENAI_MODEL or "
-            "--model."
+            "Use Azure OpenAI as the pydantic-ai backend. Requires "
+            "AZURE_OPENAI_API_KEY in the environment, plus an endpoint and "
+            "model (via --azure-endpoint/--model or AZURE_OPENAI_ENDPOINT/"
+            "AZURE_OPENAI_MODEL). The runner does not bake in any default "
+            "endpoint or model name."
         ),
     )
+    parser.add_argument("--azure-endpoint", default=None, help="Azure OpenAI endpoint URL")
     parser.add_argument("--cases", default=str(_DEFAULT_CASES))
     parser.add_argument("--graph", default=str(_DEFAULT_GRAPH))
     parser.add_argument("--no-execute", action="store_true")
     parser.add_argument("--report-dir", default=None, help="Directory to write JSON+MD reports")
+    parser.add_argument("--max-repair-attempts", type=int, default=2)
+    # Quality gates.
+    parser.add_argument("--min-case-pass-rate", type=float, default=None)
+    parser.add_argument("--min-valid-plan-rate", type=float, default=None)
+    parser.add_argument("--min-render-success-rate", type=float, default=None)
+    parser.add_argument("--min-execution-success-rate", type=float, default=None)
+    parser.add_argument("--min-term-resolution-accuracy", type=float, default=None)
+    parser.add_argument("--max-safety-violations", type=float, default=None)
+    parser.add_argument(
+        "--fail-below-threshold",
+        action="store_true",
+        help="Exit nonzero if any --min/--max threshold is missed.",
+    )
     args = parser.parse_args(argv)
 
     cases = load_cases(args.cases)
-    schema = None
-    if args.planner == "pydantic-ai":
-        schema = asyncio.run(_discover_schema(Path(args.graph)))
-    planner = make_planner(args.planner, model=args.model, azure=args.azure, schema=schema)
 
-    report = asyncio.run(
-        run(cases, planner, execute=not args.no_execute, graph_path=Path(args.graph))
+    components = asyncio.run(build_components(graph_path=Path(args.graph)))
+    planner = make_planner(
+        args.planner,
+        components,
+        model=args.model,
+        azure=args.azure,
+        azure_endpoint=args.azure_endpoint,
+        max_repair_attempts=args.max_repair_attempts,
     )
+
+    report = asyncio.run(run(cases, planner, components=components, execute=not args.no_execute))
 
     if args.report_dir:
         out_dir = Path(args.report_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
-        (out_dir / "report.json").write_text(json.dumps(report.model_dump(), indent=2))
+        (out_dir / "report.json").write_text(json.dumps(report.model_dump(), indent=2, default=str))
         (out_dir / "report.md").write_text(render_markdown_report(report))
 
     print(json.dumps(report.metrics, indent=2))
-    failures = sum(1 for c in report.cases if c.failures)
-    return 0 if failures == 0 else 1
+
+    # Threshold checks.
+    thresholds: list[ThresholdSpec] = []
+    if args.min_case_pass_rate is not None:
+        thresholds.append(ThresholdSpec("case_pass_rate", minimum=args.min_case_pass_rate))
+    if args.min_valid_plan_rate is not None:
+        thresholds.append(ThresholdSpec("valid_plan_rate", minimum=args.min_valid_plan_rate))
+    if args.min_render_success_rate is not None:
+        thresholds.append(
+            ThresholdSpec("render_success_rate", minimum=args.min_render_success_rate)
+        )
+    if args.min_execution_success_rate is not None:
+        thresholds.append(
+            ThresholdSpec("execution_success_rate", minimum=args.min_execution_success_rate)
+        )
+    if args.min_term_resolution_accuracy is not None:
+        thresholds.append(
+            ThresholdSpec("term_resolution_accuracy", minimum=args.min_term_resolution_accuracy)
+        )
+    if args.max_safety_violations is not None:
+        thresholds.append(
+            ThresholdSpec("safety_violation_count", maximum=args.max_safety_violations)
+        )
+    threshold_failures = _check_thresholds(report.metrics, thresholds)
+    if threshold_failures:
+        print("\nFailed thresholds:", file=sys.stderr)
+        for f in threshold_failures:
+            print(f"- {f}", file=sys.stderr)
+
+    case_failures = sum(1 for c in report.cases if c.failures)
+    if args.fail_below_threshold and threshold_failures:
+        return 2
+    return 0 if case_failures == 0 else 1
 
 
 if __name__ == "__main__":  # pragma: no cover

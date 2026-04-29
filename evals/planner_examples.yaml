@@ -1,0 +1,285 @@
+# Curated few-shot examples for the LLM planner. These are templates that
+# cover the main IR patterns; they are intentionally NOT one-per-golden-case
+# so the model learns shapes rather than memorizing answers.
+
+- name: simple_class_lookup
+  question: "Show every X employed by COMPANY."
+  resolved_terms_summary:
+    - "COMPANY → ex:COMPANY (individual)"
+    - "employed by → ex:worksFor (property)"
+  output:
+    status: planned
+    question: "Show every X employed by COMPANY."
+    assumptions: ["COMPANY is an individual; 'employed by' maps to ex:worksFor"]
+    confidence: 0.95
+    plan:
+      kind: select
+      prefixes:
+        - prefix: ex
+          iri: "http://example.org/"
+      projection:
+        - var: {kind: var, name: person}
+      where:
+        - kind: triple
+          subject: {kind: var, name: person}
+          predicate: {kind: prefixed_name, prefix: ex, local: worksFor}
+          object: {kind: prefixed_name, prefix: ex, local: COMPANY}
+      limit: 50
+
+- name: english_label_filter
+  question: "Return entities and their English labels."
+  output:
+    status: planned
+    question: "Return entities and their English labels."
+    confidence: 0.9
+    plan:
+      kind: select
+      prefixes:
+        - {prefix: rdfs, iri: "http://www.w3.org/2000/01/rdf-schema#"}
+      projection:
+        - var: {kind: var, name: x}
+        - var: {kind: var, name: lbl}
+      where:
+        - kind: triple
+          subject: {kind: var, name: x}
+          predicate: {kind: prefixed_name, prefix: rdfs, local: label}
+          object: {kind: var, name: lbl}
+        - kind: filter
+          expression:
+            kind: binary
+            op: "="
+            left: {kind: function, name: lang, args: [{kind: var, name: lbl}]}
+            right: {kind: literal, value: "en"}
+      limit: 50
+
+- name: optional_with_inner_filter
+  question: "List people; if a label exists in English, include it."
+  output:
+    status: planned
+    question: "List people; if a label exists in English, include it."
+    confidence: 0.85
+    plan:
+      kind: select
+      prefixes:
+        - {prefix: rdf, iri: "http://www.w3.org/1999/02/22-rdf-syntax-ns#"}
+        - {prefix: rdfs, iri: "http://www.w3.org/2000/01/rdf-schema#"}
+        - {prefix: ex, iri: "http://example.org/"}
+      projection:
+        - var: {kind: var, name: p}
+        - var: {kind: var, name: lbl}
+      where:
+        - kind: triple
+          subject: {kind: var, name: p}
+          predicate: {kind: prefixed_name, prefix: rdf, local: type}
+          object: {kind: prefixed_name, prefix: ex, local: Person}
+        - kind: optional
+          patterns:
+            - kind: triple
+              subject: {kind: var, name: p}
+              predicate: {kind: prefixed_name, prefix: rdfs, local: label}
+              object: {kind: var, name: lbl}
+            - kind: filter
+              expression:
+                kind: binary
+                op: "="
+                left: {kind: function, name: lang, args: [{kind: var, name: lbl}]}
+                right: {kind: literal, value: "en"}
+
+- name: union_two_relationships
+  question: "Find pairs A B where A knows or works for B."
+  output:
+    status: planned
+    question: "Find pairs A B where A knows or works for B."
+    confidence: 0.85
+    plan:
+      kind: select
+      prefixes:
+        - {prefix: ex, iri: "http://example.org/"}
+      projection:
+        - var: {kind: var, name: a}
+        - var: {kind: var, name: b}
+      where:
+        - kind: union
+          branches:
+            - - kind: triple
+                subject: {kind: var, name: a}
+                predicate: {kind: prefixed_name, prefix: ex, local: knows}
+                object: {kind: var, name: b}
+            - - kind: triple
+                subject: {kind: var, name: a}
+                predicate: {kind: prefixed_name, prefix: ex, local: worksFor}
+                object: {kind: var, name: b}
+
+- name: filter_not_exists
+  question: "Find people that do not have a label."
+  output:
+    status: planned
+    question: "Find people that do not have a label."
+    confidence: 0.9
+    plan:
+      kind: select
+      prefixes:
+        - {prefix: rdf, iri: "http://www.w3.org/1999/02/22-rdf-syntax-ns#"}
+        - {prefix: rdfs, iri: "http://www.w3.org/2000/01/rdf-schema#"}
+        - {prefix: ex, iri: "http://example.org/"}
+      projection:
+        - var: {kind: var, name: p}
+      where:
+        - kind: triple
+          subject: {kind: var, name: p}
+          predicate: {kind: prefixed_name, prefix: rdf, local: type}
+          object: {kind: prefixed_name, prefix: ex, local: Person}
+        - kind: filter
+          expression:
+            kind: not_exists
+            patterns:
+              - kind: triple
+                subject: {kind: var, name: p}
+                predicate: {kind: prefixed_name, prefix: rdfs, local: label}
+                object: {kind: var, name: any}
+
+- name: values_list_then_relationship
+  question: "Restrict to alice and bob, find their company."
+  output:
+    status: planned
+    question: "Restrict to alice and bob, find their company."
+    confidence: 0.9
+    plan:
+      kind: select
+      prefixes:
+        - {prefix: ex, iri: "http://example.org/"}
+      projection:
+        - var: {kind: var, name: p}
+        - var: {kind: var, name: company}
+      where:
+        - kind: values
+          variables: [{kind: var, name: p}]
+          rows:
+            - [{kind: prefixed_name, prefix: ex, local: alice}]
+            - [{kind: prefixed_name, prefix: ex, local: bob}]
+        - kind: triple
+          subject: {kind: var, name: p}
+          predicate: {kind: prefixed_name, prefix: ex, local: worksFor}
+          object: {kind: var, name: company}
+
+- name: bind_doubled
+  question: "BIND a computed value: each person's age doubled."
+  output:
+    status: planned
+    question: "BIND a computed value: each person's age doubled."
+    confidence: 0.85
+    plan:
+      kind: select
+      prefixes:
+        - {prefix: ex, iri: "http://example.org/"}
+      projection:
+        - var: {kind: var, name: p}
+        - var: {kind: var, name: dbl}
+      where:
+        - kind: triple
+          subject: {kind: var, name: p}
+          predicate: {kind: prefixed_name, prefix: ex, local: age}
+          object: {kind: var, name: age}
+        - kind: bind
+          expression:
+            kind: binary
+            op: "*"
+            left: {kind: var, name: age}
+            right: {kind: literal, value: 2}
+          var: {kind: var, name: dbl}
+
+- name: count_per_group
+  question: "Count people per company."
+  output:
+    status: planned
+    question: "Count people per company."
+    confidence: 0.9
+    plan:
+      kind: select
+      prefixes:
+        - {prefix: ex, iri: "http://example.org/"}
+      projection:
+        - var: {kind: var, name: company}
+        - expression:
+            kind: aggregate
+            function: count
+            expression: {kind: var, name: p}
+            distinct: true
+          alias: {kind: var, name: n}
+      group_by: [{kind: var, name: company}]
+      where:
+        - kind: triple
+          subject: {kind: var, name: p}
+          predicate: {kind: prefixed_name, prefix: ex, local: worksFor}
+          object: {kind: var, name: company}
+
+- name: having_count_threshold
+  question: "Companies whose employee count is greater than 1."
+  output:
+    status: planned
+    question: "Companies whose employee count is greater than 1."
+    confidence: 0.85
+    plan:
+      kind: select
+      prefixes:
+        - {prefix: ex, iri: "http://example.org/"}
+      projection:
+        - var: {kind: var, name: company}
+        - expression:
+            kind: aggregate
+            function: count
+            expression: {kind: var, name: p}
+          alias: {kind: var, name: n}
+      group_by: [{kind: var, name: company}]
+      having:
+        - kind: binary
+          op: ">"
+          left:
+            kind: aggregate
+            function: count
+            expression: {kind: var, name: p}
+          right: {kind: literal, value: 1}
+      where:
+        - kind: triple
+          subject: {kind: var, name: p}
+          predicate: {kind: prefixed_name, prefix: ex, local: worksFor}
+          object: {kind: var, name: company}
+
+- name: property_path_one_or_more
+  question: "Whom does alice transitively know (knows^+)?"
+  output:
+    status: planned
+    question: "Whom does alice transitively know (knows^+)?"
+    confidence: 0.8
+    plan:
+      kind: select
+      prefixes:
+        - {prefix: ex, iri: "http://example.org/"}
+      projection:
+        - var: {kind: var, name: b}
+      where:
+        - kind: triple
+          subject: {kind: prefixed_name, prefix: ex, local: alice}
+          predicate:
+            kind: one_or_more
+            operand:
+              kind: term
+              iri: {kind: prefixed_name, prefix: ex, local: knows}
+          object: {kind: var, name: b}
+
+- name: ambiguous_clarification
+  question: "Show me information about Aurora."
+  output:
+    status: needs_clarification
+    question: "Show me information about Aurora."
+    confidence: 0.2
+    clarification_question: "Aurora doesn't match any class, individual, or named graph in the schema. Did you mean a specific person, project, or company name?"
+
+- name: refused_destructive
+  question: "Use raw SPARQL to DROP the graph."
+  output:
+    status: refused
+    question: "Use raw SPARQL to DROP the graph."
+    confidence: 0.0
+    refusal_reason: "The request asks for a destructive raw-SPARQL DROP. This server only executes validated read-only QueryPlan IR; destructive operations are not supported."
+    policy_code: "unsafe_destructive_request"

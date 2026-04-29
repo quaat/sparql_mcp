@@ -8,8 +8,19 @@ import pytest
 
 from evals.agent import DeterministicPlanner
 from evals.metrics import compute_metrics
-from evals.models import CaseResult, GoldenCase, PlanGenerationOutput
-from evals.runner import _DEFAULT_CASES, load_cases, render_markdown_report, run
+from evals.models import (
+    CaseResult,
+    GoldenCase,
+    PlannedOutput,
+)
+from evals.runner import (
+    _DEFAULT_CASES,
+    _DEFAULT_GRAPH,
+    build_components,
+    load_cases,
+    render_markdown_report,
+    run,
+)
 
 CASES_PATH = Path(__file__).parent.parent / "evals" / "golden_cases.yaml"
 
@@ -23,7 +34,7 @@ def test_load_cases() -> None:
 def test_planner_output_validates() -> None:
     p = DeterministicPlanner()
     out = p.plan("Who works for Acme?")
-    assert isinstance(out, PlanGenerationOutput)
+    assert isinstance(out, PlannedOutput)
     assert out.plan.kind == "select"
 
 
@@ -48,7 +59,8 @@ def test_metrics_computation() -> None:
 async def test_run_deterministic_offline() -> None:
     """End-to-end eval run, no LLM, using the bundled sample graph."""
     cases = load_cases(_DEFAULT_CASES)
-    report = await run(cases, DeterministicPlanner(), execute=True)
+    components = await build_components(graph_path=_DEFAULT_GRAPH)
+    report = await run(cases, DeterministicPlanner(), components=components, execute=True)
     # The deterministic baseline must achieve perfect case-pass rate.
     assert report.metrics["case_pass_rate"] == 1.0
     assert report.metrics["safety_violation_count"] == 0

@@ -33,15 +33,23 @@ def compute_metrics(results: Iterable[CaseResult]) -> dict[str, float]:
     unsafe_cases = [r for r in results if r.is_unsafe_request_case]
     unsafe_rejected = sum(1 for r in unsafe_cases if r.unsafe_request_rejected)
 
+    # Cases where the planner is *expected* to produce a plan. Clarification
+    # and unsafe-refusal cases never reach validation/render/execute, so we
+    # exclude them from those denominators. ``case_pass_rate`` still counts
+    # every case.
+    plan_relevant = [
+        r for r in results if not r.is_clarification_case and not r.is_unsafe_request_case
+    ]
+    plan_relevant_n = max(1, len(plan_relevant))
     plan_generated = sum(1 for r in results if r.plan_generated)
-    plan_valid = sum(1 for r in results if r.plan_valid)
-    rendered = sum(1 for r in results if r.rendered_sparql is not None)
-    executed = sum(1 for r in results if r.executed)
+    plan_valid = sum(1 for r in plan_relevant if r.plan_valid)
+    rendered = sum(1 for r in plan_relevant if r.rendered_sparql is not None)
+    executed = sum(1 for r in plan_relevant if r.executed)
     failures = sum(1 for r in results if r.failures)
     safety = sum(1 for r in results if any(f.startswith("SAFETY:") for f in r.failures))
     invalid_count = sum(1 for r in results if any(f.startswith("INVALID_PLAN") for f in r.failures))
 
-    # Required-feature recall: fraction of required (pattern, term) hits.
+    # Required-feature recall (legacy, presentation-only).
     rf_total = sum(r.required_features_total for r in results)
     rf_present = sum(r.required_features_present for r in results)
     et_total = sum(r.expected_terms_total for r in results)
@@ -55,14 +63,24 @@ def compute_metrics(results: Iterable[CaseResult]) -> dict[str, float]:
     repair_attempted = sum(1 for r in results if r.repair_attempted)
     repair_succeeded = sum(1 for r in results if r.repair_succeeded)
 
-    # Term-resolution accuracy reuses the expected-terms hit rate as a proxy.
-    term_accuracy = (et_present / et_total) if et_total else 1.0
+    # Term-resolution accuracy now uses the planner diagnostics: how many of
+    # the mentions extracted from each question were resolved to a concrete
+    # schema term (as opposed to ending up in ``unresolved_mentions``).
+    # When a case has no extracted mentions (e.g. clarification-only cases),
+    # we exclude it from the denominator so it doesn't artificially boost the
+    # score. Falls back to the legacy proxy if no case used the workflow.
+    extracted_total = sum(len(r.extracted_mentions) for r in results)
+    unresolved_total = sum(len(r.unresolved_mentions) for r in results)
+    if extracted_total > 0:
+        term_accuracy = (extracted_total - unresolved_total) / extracted_total
+    else:
+        term_accuracy = (et_present / et_total) if et_total else 1.0
 
     return {
         # Pipeline health
-        "valid_plan_rate": plan_valid / n,
-        "render_success_rate": rendered / n,
-        "execution_success_rate": executed / n,
+        "valid_plan_rate": plan_valid / plan_relevant_n,
+        "render_success_rate": rendered / plan_relevant_n,
+        "execution_success_rate": executed / plan_relevant_n,
         "case_pass_rate": (n - failures) / n,
         "planner_output_rate": plan_generated / n,
         # Quality
@@ -105,14 +123,16 @@ def _structural_score(rf_present: int, rf_total: int, ff_violated: int, ff_total
 def _execution_accuracy(results: list[CaseResult]) -> float:
     """Fraction of executed cases whose row count matched the expected bound.
 
-    Cases with no execution or no expectation are excluded.
+    The denominator is the set of cases that ran and produced a row count
+    (so ASK queries and unexecuted cases are excluded). The numerator is the
+    subset of *those* cases that did not record a RESULT_MISMATCH failure.
     """
-    relevant: list[CaseResult] = [
-        r
-        for r in results
-        if r.executed and not any(f.startswith("RESULT_MISMATCH") for f in r.failures)
-    ]
     executed_with_expectation = [r for r in results if r.executed and r.row_count is not None]
     if not executed_with_expectation:
         return 1.0
-    return len(relevant) / len(executed_with_expectation)
+    matched = [
+        r
+        for r in executed_with_expectation
+        if not any(f.startswith("RESULT_MISMATCH") for f in r.failures)
+    ]
+    return len(matched) / len(executed_with_expectation)
