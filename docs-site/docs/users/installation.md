@@ -22,8 +22,11 @@ the GIL-less interpreter.
 
 ## Install from a clone
 
+Replace `YOUR_ORG_OR_USER` with the GitHub organization or username
+that owns the fork you cloned from:
+
 ```bash
-git clone https://github.com/<owner>/graph-mcp.git
+git clone https://github.com/YOUR_ORG_OR_USER/graph-mcp.git
 cd graph-mcp
 python3.12 -m venv .venv
 source .venv/bin/activate

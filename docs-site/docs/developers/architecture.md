@@ -30,8 +30,11 @@ software with structured inputs and outputs.
 Letting an LLM produce raw SPARQL would collapse this diagram into one
 arrow ("LLM → endpoint") and trade away every safety, repair, and
 auditability property. The IR exists so the validator can speak
-*structure*, the renderer can guarantee *escape correctness*, and the
-endpoint layer can guarantee *cancellation and truncation*.
+*structure*, the renderer can centralize *escape correctness*, and the
+endpoint layer can centralize *timeout handling, result truncation, and
+error normalization*. Hard cancellation is a property of the upstream
+engine — see [Endpoints](/developers/endpoints/) for the precise
+behaviour of the HTTP and local executors.
 
 See [ADR 0001](/adr/0001-query-plan-ir-not-raw-sparql/) for the full
 decision record.

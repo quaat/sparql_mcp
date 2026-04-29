@@ -74,9 +74,11 @@ variables:
 | `DOCUSAURUS_URL` | `https://<owner>.github.io` (derived from `GITHUB_REPOSITORY`) |
 | `DOCUSAURUS_BASE_URL` | `/<repo-name>/` for project sites, `/` for `*.github.io` org/user sites |
 
-The workflow sets both based on the GitHub repo slug. Override them
-in the workflow `env:` block (or as repo Variables) when serving from
-a custom domain.
+The fallback logic lives entirely in `docusaurus.config.ts` —
+empty strings (the typical effect of an undefined GitHub Actions
+repository Variable) are normalized to "unset" so the same defaults
+apply. The docs workflow forwards optional repo Variables of the same
+names; set them only when you serve from a custom domain.
 
 ## Local CI parity
 

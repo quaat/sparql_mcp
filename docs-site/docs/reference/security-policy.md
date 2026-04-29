@@ -1,7 +1,7 @@
 ---
 id: security-policy
 title: Security policy reference
-sidebar_position: 6
+sidebar_position: 7
 description: Fields of SecurityPolicy and how validator and renderer consume them.
 ---
 

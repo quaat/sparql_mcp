@@ -19,8 +19,11 @@ rdflib executor — no external SPARQL endpoint required.
 
 ## 1. Clone and install
 
+Replace `YOUR_ORG_OR_USER` with the GitHub organization or username
+that owns the fork you cloned from:
+
 ```bash
-git clone https://github.com/<owner>/graph-mcp.git
+git clone https://github.com/YOUR_ORG_OR_USER/graph-mcp.git
 cd graph-mcp
 python3.12 -m venv .venv
 source .venv/bin/activate
@@ -137,6 +140,88 @@ Claude Desktop and Claude Code examples. The minimum stanza is:
   }
 }
 ```
+
+## 6. Run a complete end-to-end query
+
+This walk-through validates, renders, and executes a `QueryPlan`
+against the bundled sample graph (`evals/sample_graph.ttl`). It needs
+no remote endpoint and uses only the `graph-mcp` package.
+
+```bash
+python - <<'PY'
+import asyncio
+from graph_mcp.compiler import QueryPlanValidator, SparqlRenderer
+from graph_mcp.config import Settings
+from graph_mcp.graph import LocalRdflibEndpoint
+from graph_mcp.models import Prefix, PrefixedName, Projection, SelectPlan, TriplePattern, Var
+from graph_mcp.security import SecurityPolicy
+
+policy = SecurityPolicy.from_settings(Settings())
+validator = QueryPlanValidator(policy)
+renderer = SparqlRenderer(policy)
+endpoint = LocalRdflibEndpoint.from_turtle_file("evals/sample_graph.ttl")
+
+plan = SelectPlan(
+    prefixes=[Prefix(prefix="ex", iri="http://example.org/")],
+    projection=[Projection(var=Var(name="person"))],
+    where=[
+        TriplePattern(
+            subject=Var(name="person"),
+            predicate=PrefixedName(prefix="ex", local="worksFor"),
+            object=PrefixedName(prefix="ex", local="Acme"),
+        ),
+    ],
+)
+
+result = validator.validate(plan)
+assert result.ok, result.issues
+
+rendered = renderer.render(plan)
+print("=== Rendered SPARQL ===")
+print(rendered.sparql)
+
+execution = asyncio.run(
+    endpoint.query(rendered.sparql, query_type="select",
+                   timeout_ms=2000, max_rows=100)
+)
+print("\n=== Result ===")
+for row in execution.rows:
+    print(" ", row.bindings["person"].value)
+print(f"\nrow_count={execution.metadata.row_count}, "
+      f"truncated={execution.metadata.truncated}")
+PY
+```
+
+The rendered SPARQL is:
+
+```sparql
+PREFIX dct: <http://purl.org/dc/terms/>
+PREFIX ex: <http://example.org/>
+PREFIX foaf: <http://xmlns.com/foaf/0.1/>
+PREFIX owl: <http://www.w3.org/2002/07/owl#>
+PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
+PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
+
+SELECT ?person
+WHERE {
+  ?person ex:worksFor ex:Acme .
+}
+LIMIT 100
+```
+
+The result against `evals/sample_graph.ttl` is:
+
+```text
+  http://example.org/alice
+  http://example.org/bob
+
+row_count=2, truncated=False
+```
+
+If you point the server at a different graph, the exact rows will of
+course differ.
 
 ## What's next?
 

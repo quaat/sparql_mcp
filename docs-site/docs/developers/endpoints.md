@@ -59,9 +59,10 @@ After parsing, SELECT and CONSTRUCT results are truncated to
 - if the result fits, `metadata.row_count` reflects the actual count
   and `truncated=False`.
 
-CONSTRUCT applies the same truncation to its `triples` list as a
-defence-in-depth — a server that ignores `LIMIT` cannot send back
-more than `max_rows` triples.
+CONSTRUCT applies the same truncation to its `triples` list as
+defence-in-depth — even if a server sends more triples than the
+plan's `LIMIT` permitted, the executor exposes at most `max_rows` to
+the caller and sets `metadata.truncated=True`.
 
 ### Timeout cancellation
 

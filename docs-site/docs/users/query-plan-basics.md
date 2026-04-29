@@ -141,3 +141,13 @@ Common checks (full list in
 - Call `validate_query_plan` first.
 - Pass `dry_run: true` to `query_graph` to see the rendered SPARQL.
 - Read `graph://policy/security` to see the active limits.
+
+## Where the workflow comes from
+
+The `build_query_plan` MCP prompt encodes this whole workflow
+(read schema resources → resolve terms → emit a `QueryPlan` →
+validate → render → execute). It is a host-renderable template, not
+a tool — the host substitutes the user's question, and the rendered
+text steers the LLM. See
+[Prompts reference](/reference/prompts-reference/) for arguments and
+the complete workflow it instructs.

@@ -34,7 +34,7 @@ deployed server's docs and the tool is not present, raw mode is off.
 **Purpose:** Map natural-language mentions to ranked schema-term
 candidates so the host LLM never has to invent IRIs.
 
-**Input:** [`ResolveTermsInput`](https://github.com/graph-mcp/graph-mcp/blob/main/src/graph_mcp/mcp_tools/tools.py)
+**Input:** `ResolveTermsInput` (see `src/graph_mcp/mcp_tools/tools.py`)
 
 ```json
 {

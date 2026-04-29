@@ -13,11 +13,14 @@ input/output, validation behavior, and security notes), see
 
 ## Discovery first
 
-The server registers two kinds of MCP surfaces:
+The server registers three kinds of MCP surfaces:
 
 - **Resources** under `graph://...` — read-only metadata about the
   schema and policy. Always start by reading these.
 - **Tools** — actions the LLM can call.
+- **Prompts** — host-renderable templates that steer the LLM into
+  the safe workflow. See
+  [Prompts reference](/reference/prompts-reference/).
 
 The recommended workflow encoded in the `build_query_plan` prompt is:
 
@@ -117,6 +120,147 @@ When `GRAPH_MCP_ENABLE_RAW_SPARQL=true`, this tool accepts a hand-written
 read-only query string. See
 [Raw SPARQL mode](/users/raw-sparql-mode/) for the constraints
 enforced by the token-aware scanner.
+
+## Worked example against the bundled graph
+
+The examples below all assume `GRAPH_MCP_LOCAL_GRAPH_FILE` points at
+`evals/sample_graph.ttl` and the default `GRAPH_MCP_DEFAULT_LIMIT=100`
+/ `GRAPH_MCP_MAX_LIMIT=1000`. None of them require a remote SPARQL
+endpoint.
+
+### `resolve_terms`
+
+Request:
+
+```json
+{
+  "mentions": ["works for", "Acme"],
+  "expected_kinds": ["property", "individual"],
+  "limit": 5
+}
+```
+
+Response (abridged; scores depend on the exact discovered schema):
+
+```json
+{
+  "candidates": [
+    {
+      "mention": "works for",
+      "iri": "http://example.org/worksFor",
+      "prefixed_name": "ex:worksFor",
+      "kind": "property",
+      "label": "works for",
+      "score": 1.0,
+      "explanation": "matched property via 'works for'"
+    },
+    {
+      "mention": "Acme",
+      "iri": "http://example.org/Acme",
+      "prefixed_name": "ex:Acme",
+      "kind": "individual",
+      "label": "Acme",
+      "score": 1.0,
+      "explanation": "matched individual via 'Acme'"
+    }
+  ]
+}
+```
+
+### `validate_query_plan`
+
+Request:
+
+```json
+{
+  "plan": {
+    "kind": "select",
+    "prefixes": [{"prefix": "ex", "iri": "http://example.org/"}],
+    "projection": [{"var": {"name": "person"}}],
+    "where": [
+      {
+        "kind": "triple",
+        "subject": {"kind": "var", "name": "person"},
+        "predicate": {"kind": "prefixed_name", "prefix": "ex", "local": "worksFor"},
+        "object": {"kind": "prefixed_name", "prefix": "ex", "local": "Acme"}
+      }
+    ],
+    "limit": 50
+  }
+}
+```
+
+Response:
+
+```json
+{ "ok": true, "issues": [] }
+```
+
+### `query_graph` with `dry_run: true`
+
+Same `plan` as above. Request:
+
+```json
+{
+  "plan": { "...": "the same SelectPlan" },
+  "max_rows": 10,
+  "dry_run": true
+}
+```
+
+Response (the rendered SPARQL is shown in full so you can see the
+LIMIT cap):
+
+```json
+{
+  "validation": { "ok": true, "issues": [] },
+  "rendered": {
+    "sparql": "PREFIX dct: <http://purl.org/dc/terms/>\nPREFIX ex: <http://example.org/>\nPREFIX foaf: <http://xmlns.com/foaf/0.1/>\nPREFIX owl: <http://www.w3.org/2002/07/owl#>\nPREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>\nPREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>\nPREFIX skos: <http://www.w3.org/2004/02/skos/core#>\nPREFIX xsd: <http://www.w3.org/2001/XMLSchema#>\n\nSELECT ?person\nWHERE {\n  ?person ex:worksFor ex:Acme .\n}\nLIMIT 10",
+    "query_type": "select",
+    "projected_variables": ["person"],
+    "warnings": []
+  },
+  "result": null,
+  "dry_run": true
+}
+```
+
+The plan asked for `limit: 50`, but the request capped it to
+`max_rows: 10` before validation, so the rendered SPARQL ends in
+`LIMIT 10`.
+
+### `query_graph` (executing)
+
+Same plan, this time without `dry_run`:
+
+```json
+{
+  "plan": { "...": "the same SelectPlan" },
+  "max_rows": 10
+}
+```
+
+Against `evals/sample_graph.ttl` the response includes:
+
+```json
+{
+  "validation": { "ok": true, "issues": [] },
+  "rendered": { "...": "rendered SPARQL as above" },
+  "result": {
+    "kind": "select",
+    "variables": ["person"],
+    "rows": [
+      { "bindings": { "person": { "type": "uri", "value": "http://example.org/alice" } } },
+      { "bindings": { "person": { "type": "uri", "value": "http://example.org/bob" } } }
+    ],
+    "metadata": { "duration_ms": 3.1, "row_count": 2, "truncated": false, "endpoint": "local:rdflib" }
+  },
+  "dry_run": false
+}
+```
+
+The exact rows reflect `evals/sample_graph.ttl`; pointing the server
+at a different graph yields different rows.
 
 ## What you should *not* do
 

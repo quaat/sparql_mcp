@@ -34,8 +34,18 @@ npm run serve       # serve the built site locally
 | `DOCUSAURUS_URL` | Public origin (e.g. `https://example.github.io`). |
 | `DOCUSAURUS_BASE_URL` | Path prefix (e.g. `/graph-mcp/` for project sites, `/` for org/user sites). |
 
-The CI workflow sets both based on the GitHub repository slug. You only
-need to override them when serving from a custom domain.
+**Both are optional.** The config derives sensible defaults from the
+GitHub repository slug (`GITHUB_REPOSITORY`) when these are unset or
+empty:
+
+- `url` falls back to `https://<owner>.github.io`;
+- `baseUrl` falls back to `/<repo>/` for project sites and `/` for
+  `*.github.io` user/org sites.
+
+Empty strings (the typical effect of an undefined GitHub Actions
+repository Variable) are treated the same as unset so the build never
+ends up with `url=""`. Override these only when you serve from a
+custom domain.
 
 ## Reference fragments are generated
 

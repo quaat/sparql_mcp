@@ -1,7 +1,7 @@
 ---
 id: query-plan-schema
 title: QueryPlan JSON Schema
-sidebar_position: 4
+sidebar_position: 5
 description: How to obtain the schema, plus curated examples for SELECT, OPTIONAL, UNION, NOT EXISTS, property paths, aggregates, subqueries, and named graphs.
 ---
 

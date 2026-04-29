@@ -1,7 +1,7 @@
 ---
 id: eval-metrics
 title: Eval metrics
-sidebar_position: 7
+sidebar_position: 8
 description: Every metric emitted by evals/metrics.py, with definitions and interpretation.
 ---
 

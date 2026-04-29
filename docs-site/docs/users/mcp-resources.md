@@ -54,3 +54,12 @@ discovery snapshot or `resolve_terms`.
 Resources read the latest cached `SchemaSnapshot`. To force a refresh,
 call the `refresh_schema` tool with `force: true`. The cache TTL is
 controlled by `GRAPH_MCP_SCHEMA_CACHE_TTL_SECONDS`.
+
+## Resources, tools, and prompts
+
+Resources are one of three MCP surfaces. The other two are
+[tools](/users/mcp-tools/) and
+[prompts](/reference/prompts-reference/). Prompts are host-renderable
+templates rather than callable actions; the bundled
+`build_query_plan` prompt steers the LLM into the safe planning
+workflow before any tools fire.

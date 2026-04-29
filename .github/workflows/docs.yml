@@ -8,22 +8,33 @@ on:
   push:
     branches: [main]
     paths:
+      # The docs cite production-readiness, packaging metadata, config,
+      # tools, resources, prompts, and evals. Anything that informs the
+      # docs should retrigger this workflow on push to main.
       - "docs-site/**"
+      - "docs/**"
+      - "README.md"
+      - ".env.example"
+      - "pyproject.toml"
       - "src/graph_mcp/**"
       - "evals/**"
       - "scripts/generate_docs_reference.py"
       - "scripts/check_docs.py"
-      - ".env.example"
       - ".github/workflows/docs.yml"
+      - ".github/workflows/ci.yml"
   pull_request:
     paths:
       - "docs-site/**"
+      - "docs/**"
+      - "README.md"
+      - ".env.example"
+      - "pyproject.toml"
       - "src/graph_mcp/**"
       - "evals/**"
       - "scripts/generate_docs_reference.py"
       - "scripts/check_docs.py"
-      - ".env.example"
       - ".github/workflows/docs.yml"
+      - ".github/workflows/ci.yml"
   workflow_dispatch:
 
 permissions:

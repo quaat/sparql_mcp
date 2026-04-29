@@ -8,8 +8,8 @@ description: Threat model, hardened controls, and known non-goals for graph-mcp 
 # Production-readiness checklist
 
 This page is the canonical operator-facing checklist. The same content
-lives in [`docs/production_readiness.md`](https://github.com/graph-mcp/graph-mcp/blob/main/docs/production_readiness.md)
-in the repository for offline reading.
+also lives in `docs/production_readiness.md` at the repository root for
+offline reading.
 
 It does **not** claim that the server has been operated under
 production load by the authors. It documents what is hardened and

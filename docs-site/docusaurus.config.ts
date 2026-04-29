@@ -2,16 +2,27 @@ import type { Config } from "@docusaurus/types";
 import type * as Preset from "@docusaurus/preset-classic";
 import { themes as prismThemes } from "prism-react-renderer";
 
+// Treat empty strings as "unset" — GitHub Actions exposes undefined repo
+// Variables as empty strings, and Docusaurus rejects empty url/baseUrl.
+function nonEmpty(value: string | undefined): string | undefined {
+  return value && value.trim().length > 0 ? value : undefined;
+}
+
 // Resolve repo / org / base URL from CI-provided env vars when present.
-// Locally we fall back to a sensible default that builds without a known owner.
-const githubRepo = process.env.GITHUB_REPOSITORY ?? "graph-mcp/graph-mcp";
-const [organizationName, projectName] = githubRepo.split("/");
+// Locally we fall back to a placeholder slug so the build can finish
+// without a known GitHub repository — operators on a fork should set
+// `GITHUB_REPOSITORY` (CI does this automatically) or override the
+// `DOCUSAURUS_URL` / `DOCUSAURUS_BASE_URL` repo Variables.
+const PLACEHOLDER_SLUG = "OWNER/graph-mcp";
+const repoSlug = nonEmpty(process.env.GITHUB_REPOSITORY) ?? PLACEHOLDER_SLUG;
+const [organizationName, projectName] = repoSlug.split("/");
 const isOrgSite = projectName.endsWith(".github.io");
 
-const url =
-  process.env.DOCUSAURUS_URL ?? `https://${organizationName}.github.io`;
-const baseUrl =
-  process.env.DOCUSAURUS_BASE_URL ?? (isOrgSite ? "/" : `/${projectName}/`);
+const configuredUrl = nonEmpty(process.env.DOCUSAURUS_URL);
+const configuredBaseUrl = nonEmpty(process.env.DOCUSAURUS_BASE_URL);
+
+const url = configuredUrl ?? `https://${organizationName}.github.io`;
+const baseUrl = configuredBaseUrl ?? (isOrgSite ? "/" : `/${projectName}/`);
 
 const config: Config = {
   title: "graph-mcp",

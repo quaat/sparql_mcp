@@ -1,7 +1,7 @@
 ---
 id: validation-errors
 title: Validation errors
-sidebar_position: 5
+sidebar_position: 6
 description: Every validation issue code emitted by QueryPlanValidator, with one-line guidance.
 ---
 
@@ -19,8 +19,7 @@ The validator emits structured `ValidationIssue` records:
 }
 ```
 
-Every code below is emitted by
-[`graph_mcp/compiler/validator.py`](https://github.com/graph-mcp/graph-mcp/blob/main/src/graph_mcp/compiler/validator.py).
+Every code below is emitted by `src/graph_mcp/compiler/validator.py`.
 This list is maintained by hand — when you add a code, update this
 page.
 

@@ -48,6 +48,40 @@ SCHEMA_OUT = DOCS_SITE / "static" / "schema" / "query-plan.schema.json"
 CONFIG_REF = DOCS_SITE / "docs" / "reference" / "configuration-reference.md"
 TOOLS_REF = DOCS_SITE / "docs" / "reference" / "tools-reference.md"
 RESOURCES_REF = DOCS_SITE / "docs" / "reference" / "resources-reference.md"
+PROMPTS_REF = DOCS_SITE / "docs" / "reference" / "prompts-reference.md"
+
+# Variables whose default exposes data or relaxes the IR; flag in the
+# generated configuration table so the column is not just a copy of the
+# .env defaults. The list is intentionally hand-maintained — it reflects
+# operator-visible risk, not Pydantic validation.
+SECURITY_SENSITIVE_VARS: dict[str, str] = {
+    "GRAPH_MCP_ENABLE_RAW_SPARQL": (
+        "Bypasses IR-level structural checks; only enable for trusted callers."
+    ),
+    "GRAPH_MCP_ALLOW_UNBOUNDED_PATHS": (
+        "Allows `*` / `+` paths; pair with `GRAPH_MCP_ALLOWED_PATH_PREDICATES` if enabled."
+    ),
+    "GRAPH_MCP_ALLOWED_GRAPHS": (
+        "Empty disables the named-graph allowlist; an explicit list is recommended in production."
+    ),
+    "GRAPH_MCP_ALLOWED_SERVICE_ENDPOINTS": (
+        "Each entry is a data-exfiltration channel; treat like a firewall rule."
+    ),
+    "GRAPH_MCP_ALLOWED_PATH_PREDICATES": (
+        "Empty disables the predicate allowlist for property paths."
+    ),
+    "GRAPH_MCP_MAX_LIMIT": ("Cap on rows per query; tighter than the upstream engine's budget."),
+    "GRAPH_MCP_TIMEOUT_MS": (
+        "Caller-side timeout; the engine must enforce its own "
+        "per-query budget for hard cancellation."
+    ),
+    "GRAPH_MCP_ALLOW_DEFAULT_PREFIX_OVERRIDE": (
+        "Permits redefinition of `rdf`, `xsd`, etc.; rarely correct."
+    ),
+    "GRAPH_MCP_ENDPOINT_URL": ("Empty falls back to the local in-memory rdflib executor."),
+    "GRAPH_MCP_LOCAL_GRAPH_FILE": ("Loaded once at startup; on-disk changes are not picked up."),
+    "GRAPH_MCP_LOG_LEVEL": ("`DEBUG` may emit query text; keep `INFO` or higher in production."),
+}
 
 
 # --- Generic managed-block helpers -----------------------------------------
@@ -135,14 +169,29 @@ def render_config_table(env_vars: Iterable[EnvVar]) -> str:
     rows: list[list[str]] = []
     for v in env_vars:
         default = v.default if v.default else "_(empty)_"
+        # "Required" reflects deployment-time semantics, not pydantic
+        # validation: a Settings field with a default is technically
+        # optional, but some are required for the server to do anything
+        # useful (e.g. an endpoint URL when the schema provider is in
+        # `sparql` mode).
+        if v.name in {"GRAPH_MCP_ENDPOINT_URL", "GRAPH_MCP_LOCAL_GRAPH_FILE"}:
+            required = "one of these two for `sparql` schema provider"
+        else:
+            required = "no"
+        security = SECURITY_SENSITIVE_VARS.get(v.name, "")
         rows.append(
             [
                 f"`{v.name}`",
                 f"`{default}`",
+                required,
+                security,
                 v.description or "_(undocumented)_",
             ]
         )
-    return _table(rows, header=["Variable", "Default", "Description"])
+    return _table(
+        rows,
+        header=["Variable", "Default", "Required", "Security impact", "Description"],
+    )
 
 
 # --- MCP tool / resource discovery -----------------------------------------
@@ -151,9 +200,12 @@ def render_config_table(env_vars: Iterable[EnvVar]) -> str:
 def discover_mcp_decorations(path: Path, decorator: str) -> list[str]:
     """Return the names registered with ``@mcp.<decorator>(...)`` in a module.
 
-    Walks the AST so we don't depend on import-time side effects. For
-    tools the registered name is the function name; for resources it is
-    the URI passed to ``@mcp.resource("...")``.
+    Walks the AST so we don't depend on import-time side effects.
+
+    - For ``tool``, returns the function name (the MCP tool name).
+    - For ``resource``, returns the URI passed to ``@mcp.resource("...")``.
+    - For ``prompt``, returns the prompt name passed to
+      ``@mcp.prompt("...")``.
     """
     tree = ast.parse(path.read_text())
     out: list[str] = []
@@ -168,7 +220,7 @@ def discover_mcp_decorations(path: Path, decorator: str) -> list[str]:
                 continue
             if decorator == "tool":
                 out.append(node.name)
-            elif decorator == "resource":
+            elif decorator in ("resource", "prompt"):
                 if dec.args and isinstance(dec.args[0], ast.Constant):
                     out.append(str(dec.args[0].value))
             else:  # pragma: no cover
@@ -194,6 +246,14 @@ def render_resources_list(uris: Iterable[str]) -> str:
         anchor = uri.replace("graph://", "").replace("/", "-")
         rows.append([f"`{uri}`", f"[Details](#{anchor})"])
     return _table(rows, header=["URI", "Anchor"])
+
+
+def render_prompts_list(prompt_names: Iterable[str]) -> str:
+    rows: list[list[str]] = []
+    for name in prompt_names:
+        anchor = name.replace("_", "-")
+        rows.append([f"`{name}`", f"[Details](#{anchor})"])
+    return _table(rows, header=["Prompt", "Anchor"])
 
 
 # --- QueryPlan JSON Schema --------------------------------------------------
@@ -288,6 +348,21 @@ def build_plans() -> list[Plan]:
                 path=RESOURCES_REF,
                 desired=resources_text,
                 label="resources list",
+            )
+        )
+
+    # 5. MCP prompts list.
+    prompt_names = discover_mcp_decorations(SERVER_PY, "prompt")
+    prompts_block = render_prompts_list(prompt_names)
+    if PROMPTS_REF.exists():
+        prompts_text = _replace_managed_block(
+            PROMPTS_REF.read_text(), "prompts-table", prompts_block
+        )
+        plans.append(
+            Plan(
+                path=PROMPTS_REF,
+                desired=prompts_text,
+                label="prompts list",
             )
         )
 

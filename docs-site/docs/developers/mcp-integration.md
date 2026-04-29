@@ -66,9 +66,55 @@ The body is always JSON. The renderer functions live in
 ## Prompt registration
 
 `mcp.prompt("build_query_plan")` registers the prompt template defined
-in `graph_mcp/mcp_tools/prompts.py`. The template tells the LLM the
+in `src/graph_mcp/mcp_tools/prompts.py`. The template tells the LLM the
 recommended workflow (read resources → resolve terms → build IR →
 validate → render → execute).
+
+### Prompts vs tools vs resources
+
+- **Tools** are callable actions. The host invokes one and gets a
+  structured response.
+- **Resources** are read-only documents (`graph://...`). The host
+  fetches them.
+- **Prompts** are host-renderable templates. The host substitutes
+  arguments into the template and sends the rendered text to the
+  LLM. Calling a prompt does not execute server code beyond the
+  string substitution.
+
+The three surfaces are exposed independently — clients enumerate
+them via `tools/list`, `resources/list`, and `prompts/list`. The
+server enforces structural and security guarantees inside the **tool
+path**; prompts only carry guidance text.
+
+### Adding a new prompt
+
+1. Add a template to `src/graph_mcp/mcp_tools/prompts.py`. Keep it a
+   plain `str` with `{argument}` substitutions.
+2. Register it in `server.py`:
+   ```python
+   @mcp.prompt("your_prompt_name")
+   def your_prompt(arg1: str, arg2: str | None = None) -> str:
+       return YOUR_TEMPLATE.format(arg1=arg1, arg2=arg2 or "")
+   ```
+3. Document it under
+   [Prompts reference](/reference/prompts-reference/) with arguments,
+   workflow, and limitations. The CI doc-coverage check fails if a
+   newly registered prompt is missing from this page.
+4. Re-run `python scripts/generate_docs_reference.py` so the managed
+   prompts table picks up the new name.
+5. Add a test under `tests/` exercising the substitution.
+
+### What to update when a prompt changes
+
+If you edit the template body:
+
+- update `Prompts reference` so the documented workflow matches what
+  the prompt actually instructs;
+- update the user-guide pages that reference the workflow
+  (`users/query-plan-basics.md`, `users/mcp-tools.md`).
+
+If you change a prompt's argument list, also update any host
+configuration examples that call it.
 
 ## Adding a new tool
 
