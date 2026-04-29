@@ -180,10 +180,17 @@
       - {p: "ex:carol", company: "ex:Globex"}
 
 - id: case_016_named_graph
-  question: "Query inside a specific named graph."
+  question: "List the people who work for a company inside the ex:employmentGraph named graph."
   expected:
     required_pattern_kinds: [graph]
-    required_terms: ["GRAPH"]
+    # Use the absolute IRI for the term check — the LLM-emitted plan does
+    # not always declare the ``ex:`` prefix, so the renderer expands.
+    # ``required_pattern_kinds: [graph]`` still asserts the GRAPH pattern.
+    required_terms: ["GRAPH", "http://example.org/employmentGraph"]
+    expected_bindings:
+      - {person: "ex:alice"}
+      - {person: "ex:bob"}
+      - {person: "ex:carol"}
 
 - id: case_017_date_filter
   question: "People who joined after 2019-01-01 (date filter)."

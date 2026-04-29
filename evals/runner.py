@@ -47,7 +47,7 @@ from graph_mcp.graph.schema_discovery import (
 from graph_mcp.graph.term_resolver import TermResolver
 from graph_mcp.security import SecurityPolicy
 
-_DEFAULT_GRAPH = Path(__file__).parent / "sample_graph.ttl"
+_DEFAULT_GRAPH = Path(__file__).parent / "sample_dataset.trig"
 _DEFAULT_CASES = Path(__file__).parent / "golden_cases.yaml"
 
 
@@ -750,7 +750,7 @@ async def build_components(
     policy = SecurityPolicy.from_settings(settings)
     validator = QueryPlanValidator(policy)
     renderer = SparqlRenderer(policy)
-    endpoint = LocalRdflibEndpoint.from_turtle_file(graph_path)
+    endpoint = LocalRdflibEndpoint.from_rdf_file(graph_path)
     discovery = SparqlSchemaProvider(endpoint)
     snapshot = await discovery.refresh()
     schema_provider: SchemaProvider = StaticSchemaProvider(snapshot)

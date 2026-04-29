@@ -58,6 +58,7 @@ class NamedGraphTerm(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     iri: str
+    prefixed_name: str | None = None
     label: str | None = None
     description: str | None = None
 
@@ -206,6 +207,8 @@ class SparqlSchemaProvider:
         # Generate prefixed_name for every term whose IRI starts with a known prefix.
         for term in (*classes, *properties, *individuals):
             term.prefixed_name = _to_prefixed(term.iri, prefixes)
+        for ng in named_graphs:
+            ng.prefixed_name = _to_prefixed(ng.iri, prefixes)
 
         snap = SchemaSnapshot(
             prefixes=prefixes,

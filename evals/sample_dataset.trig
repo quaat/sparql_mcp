@@ -1,0 +1,75 @@
+@prefix ex:   <http://example.org/> .
+@prefix rdf:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+
+# Default graph — mirrors evals/sample_graph.ttl so the existing eval
+# cases keep passing unchanged.
+{
+  ex:Person a rdfs:Class ; rdfs:label "Person" .
+  ex:Company a rdfs:Class ; rdfs:label "Company" .
+  ex:Project a rdfs:Class ; rdfs:label "Project" .
+
+  ex:worksFor a rdf:Property ; rdfs:label "works for" .
+  ex:knows a rdf:Property ; rdfs:label "knows" .
+  ex:contributesTo a rdf:Property ; rdfs:label "contributes to" .
+  ex:foundedBy a rdf:Property ; rdfs:label "founded by" .
+  ex:age a rdf:Property ; rdfs:label "age" .
+  ex:joined a rdf:Property ; rdfs:label "joined" .
+
+  ex:Acme a ex:Company ; rdfs:label "Acme" ; ex:foundedBy ex:alice .
+  ex:Globex a ex:Company ; rdfs:label "Globex" ; ex:foundedBy ex:erin .
+
+  ex:alice a ex:Person ;
+    rdfs:label "Alice"@en ;
+    ex:worksFor ex:Acme ;
+    ex:age 32 ;
+    ex:joined "2020-06-01"^^xsd:date ;
+    ex:knows ex:bob ;
+    ex:contributesTo ex:ProjectA .
+
+  ex:bob a ex:Person ;
+    rdfs:label "Bob"@en ;
+    ex:worksFor ex:Acme ;
+    ex:age 41 ;
+    ex:joined "2018-01-15"^^xsd:date ;
+    ex:knows ex:carol .
+
+  ex:carol a ex:Person ;
+    rdfs:label "Carol"@en ;
+    ex:worksFor ex:Globex ;
+    ex:age 29 ;
+    ex:joined "2022-11-04"^^xsd:date ;
+    ex:contributesTo ex:ProjectA ,
+                     ex:ProjectB .
+
+  ex:dan a ex:Person ;
+    rdfs:label "Dan"@en ;
+    ex:age 55 ;
+    ex:joined "2015-03-30"^^xsd:date .
+
+  ex:erin a ex:Person ;
+    rdfs:label "Erin"@en ;
+    ex:age 37 ;
+    ex:knows ex:alice .
+
+  ex:ProjectA a ex:Project ; rdfs:label "Apollo" .
+  ex:ProjectB a ex:Project ; rdfs:label "Borealis" .
+  ex:ProjectC a ex:Project ; rdfs:label "Cassini" .
+}
+
+# Named graph used by case_016_named_graph. Contains a self-contained
+# slice of employment data — Person / Company types plus the
+# ex:worksFor edges — so a planner can answer "who works for a company
+# inside this named graph" without joining back to the default graph.
+ex:employmentGraph {
+  ex:Acme a ex:Company .
+  ex:Globex a ex:Company .
+
+  ex:alice a ex:Person ;
+    ex:worksFor ex:Acme .
+  ex:bob a ex:Person ;
+    ex:worksFor ex:Acme .
+  ex:carol a ex:Person ;
+    ex:worksFor ex:Globex .
+}

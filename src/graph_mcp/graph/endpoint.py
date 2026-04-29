@@ -301,6 +301,38 @@ class LocalRdflibEndpoint:
         g.parse(data=ttl, format="turtle")
         return cls(graph=g)
 
+    _RDF_FORMAT_BY_SUFFIX = {
+        ".ttl": "turtle",
+        ".trig": "trig",
+        ".nt": "nt",
+        ".nq": "nquads",
+        ".rdf": "xml",
+        ".xml": "xml",
+        ".jsonld": "json-ld",
+    }
+
+    @classmethod
+    def from_rdf_file(cls, path: str | Path) -> LocalRdflibEndpoint:
+        """Load an RDF file, picking the parser format from the file suffix.
+
+        Supports the formats rdflib ships with by default (Turtle, TriG,
+        N-Triples, N-Quads, RDF/XML, JSON-LD). TriG / N-Quads bring
+        named graphs into the dataset; the others populate the default
+        graph only.
+        """
+        import rdflib
+
+        path = Path(path)
+        fmt = cls._RDF_FORMAT_BY_SUFFIX.get(path.suffix.lower())
+        if fmt is None:
+            raise ValueError(
+                f"unsupported RDF fixture suffix {path.suffix!r}; "
+                f"known suffixes: {sorted(cls._RDF_FORMAT_BY_SUFFIX)}"
+            )
+        g = rdflib.Dataset()
+        g.parse(str(path), format=fmt)
+        return cls(graph=g)
+
     @property
     def graph(self) -> Any:
         return self._graph

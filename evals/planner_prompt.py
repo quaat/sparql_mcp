@@ -67,6 +67,10 @@ hints make the intended property clear. Trust the hints.
 - Use the **resolved candidate table** at the bottom of each user message.
   The candidates list ``prefixed_name`` and absolute ``iri`` for each term —
   use exactly those values.
+- Common class plurals are normalized before resolution. If the table
+  resolves ``people`` to ``ex:Person`` (or ``companies`` to ``ex:Company``,
+  etc.), trust that mapping and plan — do not ask whether ``people`` means
+  ``Person``.
 - Prefer ``PrefixedName`` (``{"kind":"prefixed_name","prefix":"ex","local":"Acme"}``)
   when the candidate has a ``prefixed_name``.
 - Preserve local-name case exactly: ``ex:Acme`` (the individual), not ``ex:acme``.

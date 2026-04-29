@@ -547,13 +547,13 @@ class DeterministicPlanner:
     def _named_graph_query(self, q: str) -> PlannedOutput:
         plan = SelectPlan(
             prefixes=[EX],
-            projection=[Projection(var=Var(name="s"))],
+            projection=[Projection(var=Var(name="person"))],
             where=[
                 GraphPattern(
-                    graph=_ex_iri("graph1"),
+                    graph=_ex_iri("employmentGraph"),
                     patterns=[
                         TriplePattern(
-                            subject=Var(name="s"),
+                            subject=Var(name="person"),
                             predicate=Iri(value="http://www.w3.org/1999/02/22-rdf-syntax-ns#type"),
                             object=_ex_iri("Person"),
                         )

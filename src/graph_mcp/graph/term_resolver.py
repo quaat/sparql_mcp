@@ -46,9 +46,44 @@ class TermResolutionResult(BaseModel):
 
 _NORM_RE = re.compile(r"[^a-z0-9]+")
 
+# Deliberately small, deterministic lemma table for common class nouns.
+# Keep the LLM-side prompt strict on unresolved mentions; the right place
+# to bridge "people" → "person" is here, before the resolver scores.
+_LEMMA_OVERRIDES: dict[str, str] = {
+    "people": "person",
+    "persons": "person",
+    "companies": "company",
+    "organisations": "organisation",
+    "organizations": "organization",
+    "projects": "project",
+    "employees": "employee",
+    "graphs": "graph",
+}
+
+
+def _lemma_token(token: str) -> str:
+    if token in _LEMMA_OVERRIDES:
+        return _LEMMA_OVERRIDES[token]
+    # Conservative regular-plural fallback. Skip:
+    # - short words (avoid spurious 1-letter strips)
+    # - ``ss``      → ``class``      must not become ``cla``
+    # - ``us``      → ``status``     must not become ``statu``
+    # - ``is``      → ``analysis``   must not become ``analysi``
+    # - ``os``      → ``chaos``      must not become ``chao``
+    if len(token) > 4 and token.endswith("ies"):
+        return token[:-3] + "y"
+    if len(token) > 4 and token.endswith("s") and not token.endswith(
+        ("ss", "us", "is", "os")
+    ):
+        return token[:-1]
+    return token
+
 
 def _normalize(s: str) -> str:
-    return _NORM_RE.sub(" ", s.lower()).strip()
+    raw = _NORM_RE.sub(" ", s.lower()).strip()
+    if not raw:
+        return raw
+    return " ".join(_lemma_token(part) for part in raw.split())
 
 
 def _split_camel(s: str) -> str:
@@ -166,7 +201,10 @@ class TermResolver:
         )
 
     def _score_graph(self, mention: str, g: NamedGraphTerm) -> TermCandidate:
-        cands = [g.label, g.iri.rstrip("#/").rsplit("/", 1)[-1]]
+        cands: list[str | None] = [g.label, g.iri.rstrip("#/").rsplit("/", 1)[-1]]
+        if g.prefixed_name:
+            cands.append(g.prefixed_name)
+            cands.append(_split_camel(g.prefixed_name.split(":", 1)[-1]))
         best = 0.0
         best_src = ""
         for s in cands:
@@ -179,7 +217,7 @@ class TermResolver:
         return TermCandidate(
             mention=mention,
             iri=g.iri,
-            prefixed_name=None,
+            prefixed_name=g.prefixed_name,
             kind="graph",
             label=g.label,
             score=best,
