@@ -809,8 +809,10 @@ The available schema and the QueryPlan IR JSON schema are appended below.
 
 @dataclass
 class PydanticAIPlannerConfig:
-    model: str
-    """Model identifier (e.g. ``anthropic:claude-sonnet-4-6``)."""
+    model: Any
+    """Model identifier string (e.g. ``anthropic:claude-sonnet-4-6``) or a
+    pre-built ``pydantic_ai.models.Model`` instance (e.g. an Azure-backed
+    ``OpenAIChatModel``)."""
 
     schema: SchemaSnapshot | None = None
     """Schema snapshot to expose to the planner."""
@@ -888,7 +890,7 @@ def build_planner_from_callable(
 
 
 def build_pydantic_ai_planner(
-    model: str,
+    model: Any,
     *,
     schema: SchemaProvider | None = None,
     examples: list[dict[str, Any]] | None = None,
@@ -899,6 +901,11 @@ def build_pydantic_ai_planner(
     resolver: TermResolver | None = None,
 ) -> Planner:
     """Construct a PydanticAI-backed planner.
+
+    ``model`` may be a model identifier string or a pre-built
+    ``pydantic_ai.models.Model`` instance — useful for non-default providers
+    like Azure OpenAI, where the endpoint and credentials are wired through
+    a custom provider rather than a string identifier.
 
     Imports are deferred so that the optional ``pydantic-ai`` dependency does
     not block test execution.

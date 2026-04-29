@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
 from collections.abc import Iterable
 from pathlib import Path
@@ -22,6 +23,31 @@ from graph_mcp.security import SecurityPolicy
 
 _DEFAULT_GRAPH = Path(__file__).parent / "sample_graph.ttl"
 _DEFAULT_CASES = Path(__file__).parent / "golden_cases.yaml"
+
+_AZURE_DEFAULT_ENDPOINT = "https://oceanai-dev-swe-01-fo.services.ai.azure.com/openai/v1"
+_AZURE_DEFAULT_MODEL = "gpt-5.5-1"
+
+
+def _build_azure_openai_model(model_name: str | None = None) -> Any:
+    """Build an Azure-backed pydantic-ai model.
+
+    Reads the API key from ``AZURE_OPENAI_API_KEY``. Endpoint and model name
+    fall back to the defaults baked into this module but can be overridden
+    via ``AZURE_OPENAI_ENDPOINT`` and ``AZURE_OPENAI_MODEL``.
+    """
+    from pydantic_ai.models.openai import OpenAIChatModel
+    from pydantic_ai.providers.azure import AzureProvider
+
+    api_key = os.environ.get("AZURE_OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError(
+            "AZURE_OPENAI_API_KEY environment variable is not set; "
+            "export it before running with --azure"
+        )
+    endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT", _AZURE_DEFAULT_ENDPOINT)
+    name = model_name or os.environ.get("AZURE_OPENAI_MODEL") or _AZURE_DEFAULT_MODEL
+    provider = AzureProvider(azure_endpoint=endpoint, api_key=api_key)
+    return OpenAIChatModel(name, provider=provider)
 
 
 def load_cases(path: str | Path) -> list[GoldenCase]:
@@ -50,7 +76,10 @@ async def run_one(
     row_count: int | None = None
 
     try:
-        out = planner.plan(case.question)
+        # Run in a thread so planners that use ``agent.run_sync`` (which
+        # internally calls ``loop.run_until_complete``) don't collide with
+        # the runner's own asyncio loop.
+        out = await asyncio.to_thread(planner.plan, case.question)
         plan_generated = True
     except Exception as exc:
         failures.append(f"PLAN_ERROR: {exc}")
@@ -342,14 +371,38 @@ def render_markdown_report(report: EvaluationReport) -> str:
     return "\n".join(lines)
 
 
-def make_planner(name: str, *, model: str | None = None) -> Planner:
+def make_planner(
+    name: str,
+    *,
+    model: str | None = None,
+    azure: bool = False,
+    schema: Any = None,
+) -> Planner:
     if name == "deterministic":
         return DeterministicPlanner()
     if name == "pydantic-ai":
-        if not model:
-            raise ValueError("pydantic-ai planner requires --model")
-        return build_pydantic_ai_planner(model)
+        model_obj: Any
+        if azure:
+            model_obj = _build_azure_openai_model(model)
+        else:
+            if not model:
+                raise ValueError("pydantic-ai planner requires --model (or --azure)")
+            model_obj = model
+        return build_pydantic_ai_planner(model_obj, schema=schema)
     raise ValueError(f"unknown planner: {name}")
+
+
+async def _discover_schema(graph_path: Path) -> Any:
+    """Build a static schema provider from the sample graph so the LLM
+    planner has the ontology available in its system prompt."""
+    from graph_mcp.graph.schema_discovery import StaticSchemaProvider
+
+    endpoint = LocalRdflibEndpoint.from_turtle_file(graph_path)
+    from graph_mcp.graph.schema_discovery import SparqlSchemaProvider
+
+    provider = SparqlSchemaProvider(endpoint)
+    snapshot = await provider.refresh()
+    return StaticSchemaProvider(snapshot)
 
 
 async def run(
@@ -392,6 +445,17 @@ def main(argv: list[str] | None = None) -> int:
         choices=("deterministic", "pydantic-ai"),
     )
     parser.add_argument("--model", default=None, help="LLM model for pydantic-ai planner")
+    parser.add_argument(
+        "--azure",
+        action="store_true",
+        help=(
+            "Use Azure OpenAI as the pydantic-ai backend. Reads "
+            "AZURE_OPENAI_API_KEY from the environment; endpoint and model "
+            "default to the values baked into the runner but can be "
+            "overridden via AZURE_OPENAI_ENDPOINT / AZURE_OPENAI_MODEL or "
+            "--model."
+        ),
+    )
     parser.add_argument("--cases", default=str(_DEFAULT_CASES))
     parser.add_argument("--graph", default=str(_DEFAULT_GRAPH))
     parser.add_argument("--no-execute", action="store_true")
@@ -399,7 +463,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     cases = load_cases(args.cases)
-    planner = make_planner(args.planner, model=args.model)
+    schema = None
+    if args.planner == "pydantic-ai":
+        schema = asyncio.run(_discover_schema(Path(args.graph)))
+    planner = make_planner(args.planner, model=args.model, azure=args.azure, schema=schema)
 
     report = asyncio.run(
         run(cases, planner, execute=not args.no_execute, graph_path=Path(args.graph))

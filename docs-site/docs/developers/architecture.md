@@ -11,14 +11,14 @@ The shape of the system is intentionally narrow:
 
 ```mermaid
 flowchart TD
-    Q[Natural-language question] --> P[LLM / planner]
-    P --> IR[QueryPlan IR<br/>(strict Pydantic models)]
-    IR --> V[QueryPlanValidator<br/>+ SecurityPolicy]
-    V -- ok --> R[SparqlRenderer<br/>(deterministic, escape-safe)]
+    Q["Natural-language question"] --> P["LLM / planner"]
+    P --> IR["QueryPlan IR<br/>(strict Pydantic models)"]
+    IR --> V["QueryPlanValidator<br/>+ SecurityPolicy"]
+    V -- ok --> R["SparqlRenderer<br/>(deterministic, escape-safe)"]
     V -- errors --> P
-    R --> E[GraphEndpoint<br/>(rdflib local / HTTP remote)]
-    E --> Res[Normalized QueryResult<br/>(SelectResult / AskResult / ConstructResult)]
-    Res --> Host[MCP host returns to user]
+    R --> E["GraphEndpoint<br/>(rdflib local / HTTP remote)"]
+    E --> Res["Normalized QueryResult<br/>(SelectResult / AskResult / ConstructResult)"]
+    Res --> Host["MCP host returns to user"]
 ```
 
 Each arrow is a deterministic step, not an LLM call. The LLM only
