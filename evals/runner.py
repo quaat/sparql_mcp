@@ -58,10 +58,11 @@ def _build_azure_openai_model(model_name: str | None = None, *, endpoint: str | 
     private organization endpoint. Pass values via environment variables
     (``AZURE_OPENAI_API_KEY``, ``AZURE_OPENAI_ENDPOINT``, ``AZURE_OPENAI_MODEL``)
     or via the ``--azure-endpoint`` / ``--model`` CLI flags.
-    """
-    from pydantic_ai.models.openai import OpenAIChatModel
-    from pydantic_ai.providers.azure import AzureProvider
 
+    Environment-variable validation happens before the optional ``pydantic-ai``
+    import so callers without that extra installed still get a clear error
+    message about *what* is misconfigured rather than ``ImportError``.
+    """
     api_key = os.environ.get("AZURE_OPENAI_API_KEY")
     if not api_key:
         raise RuntimeError(
@@ -76,6 +77,15 @@ def _build_azure_openai_model(model_name: str | None = None, *, endpoint: str | 
     name = model_name or os.environ.get("AZURE_OPENAI_MODEL")
     if not name:
         raise RuntimeError("Azure model name is required: set AZURE_OPENAI_MODEL or pass --model")
+
+    try:
+        from pydantic_ai.models.openai import OpenAIChatModel
+        from pydantic_ai.providers.azure import AzureProvider
+    except ImportError as exc:  # pragma: no cover - depends on optional extra
+        raise ImportError(
+            "pydantic-ai is required for the Azure planner backend; "
+            "install with `pip install graph-mcp[ai]`"
+        ) from exc
     provider = AzureProvider(azure_endpoint=resolved_endpoint, api_key=api_key)
     return OpenAIChatModel(name, provider=provider)
 
