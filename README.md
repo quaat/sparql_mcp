@@ -85,6 +85,7 @@ Structured QueryResult
 | MCP wiring | `graph_mcp/server.py`, `graph_mcp/mcp_tools/` |
 | Security | `graph_mcp/security/policy.py` |
 | Evals | `evals/` |
+| RAG evals (experimental) | `evals_rag/` — see `evals_rag/README.md` |
 
 ## Installation
 
