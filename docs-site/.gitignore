@@ -1,0 +1,18 @@
+# Docusaurus
+.docusaurus/
+build/
+.cache-loader/
+
+# Node
+node_modules/
+*.log
+.npm/
+.pnp.*
+.yarn/*
+
+# Editors
+.idea/
+.vscode/
+
+# OS
+.DS_Store

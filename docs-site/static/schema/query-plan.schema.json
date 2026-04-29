@@ -1,0 +1,3340 @@
+{
+  "$defs": {
+    "AggregateExpr": {
+      "additionalProperties": false,
+      "properties": {
+        "distinct": {
+          "default": false,
+          "title": "Distinct",
+          "type": "boolean"
+        },
+        "expression": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "aggregate": "#/$defs/AggregateExpr",
+                  "binary": "#/$defs/BinaryExpr",
+                  "bound": "#/$defs/BoundExpr",
+                  "datetime": "#/$defs/DateTimeExpr",
+                  "exists": "#/$defs/ExistsExpr",
+                  "function": "#/$defs/FunctionExpr",
+                  "in": "#/$defs/InExpr",
+                  "iri": "#/$defs/Iri",
+                  "lang_matches": "#/$defs/LangMatchesExpr",
+                  "literal": "#/$defs/LiteralValue",
+                  "not": "#/$defs/NotExpr",
+                  "not_exists": "#/$defs/NotExistsExpr",
+                  "prefixed_name": "#/$defs/PrefixedName",
+                  "regex": "#/$defs/RegexExpr",
+                  "unary": "#/$defs/UnaryExpr",
+                  "var": "#/$defs/Var"
+                },
+                "propertyName": "kind"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/Var"
+                },
+                {
+                  "$ref": "#/$defs/Iri"
+                },
+                {
+                  "$ref": "#/$defs/PrefixedName"
+                },
+                {
+                  "$ref": "#/$defs/LiteralValue"
+                },
+                {
+                  "$ref": "#/$defs/BinaryExpr"
+                },
+                {
+                  "$ref": "#/$defs/UnaryExpr"
+                },
+                {
+                  "$ref": "#/$defs/NotExpr"
+                },
+                {
+                  "$ref": "#/$defs/InExpr"
+                },
+                {
+                  "$ref": "#/$defs/FunctionExpr"
+                },
+                {
+                  "$ref": "#/$defs/RegexExpr"
+                },
+                {
+                  "$ref": "#/$defs/BoundExpr"
+                },
+                {
+                  "$ref": "#/$defs/LangMatchesExpr"
+                },
+                {
+                  "$ref": "#/$defs/NotExistsExpr"
+                },
+                {
+                  "$ref": "#/$defs/ExistsExpr"
+                },
+                {
+                  "$ref": "#/$defs/AggregateExpr"
+                },
+                {
+                  "$ref": "#/$defs/DateTimeExpr"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expression"
+        },
+        "function": {
+          "title": "Function",
+          "type": "string"
+        },
+        "kind": {
+          "const": "aggregate",
+          "default": "aggregate",
+          "title": "Kind",
+          "type": "string"
+        },
+        "separator": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Separator"
+        }
+      },
+      "required": [
+        "function"
+      ],
+      "title": "AggregateExpr",
+      "type": "object"
+    },
+    "AskPlan": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "ask",
+          "default": "ask",
+          "title": "Kind",
+          "type": "string"
+        },
+        "prefixes": {
+          "items": {
+            "$ref": "#/$defs/Prefix"
+          },
+          "title": "Prefixes",
+          "type": "array"
+        },
+        "where": {
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "bind": "#/$defs/BindPattern",
+                "filter": "#/$defs/FilterPattern",
+                "graph": "#/$defs/GraphPattern",
+                "group": "#/$defs/GroupPattern",
+                "minus": "#/$defs/MinusPattern",
+                "optional": "#/$defs/OptionalPattern",
+                "service": "#/$defs/ServicePattern",
+                "subquery": "#/$defs/SubqueryPattern",
+                "triple": "#/$defs/TriplePattern",
+                "union": "#/$defs/UnionPattern",
+                "values": "#/$defs/ValuesPattern"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/TriplePattern"
+              },
+              {
+                "$ref": "#/$defs/GroupPattern"
+              },
+              {
+                "$ref": "#/$defs/OptionalPattern"
+              },
+              {
+                "$ref": "#/$defs/UnionPattern"
+              },
+              {
+                "$ref": "#/$defs/MinusPattern"
+              },
+              {
+                "$ref": "#/$defs/FilterPattern"
+              },
+              {
+                "$ref": "#/$defs/BindPattern"
+              },
+              {
+                "$ref": "#/$defs/ValuesPattern"
+              },
+              {
+                "$ref": "#/$defs/GraphPattern"
+              },
+              {
+                "$ref": "#/$defs/ServicePattern"
+              },
+              {
+                "$ref": "#/$defs/SubqueryPattern"
+              }
+            ]
+          },
+          "title": "Where",
+          "type": "array"
+        }
+      },
+      "title": "AskPlan",
+      "type": "object"
+    },
+    "BinaryExpr": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "binary",
+          "default": "binary",
+          "title": "Kind",
+          "type": "string"
+        },
+        "left": {
+          "discriminator": {
+            "mapping": {
+              "aggregate": "#/$defs/AggregateExpr",
+              "binary": "#/$defs/BinaryExpr",
+              "bound": "#/$defs/BoundExpr",
+              "datetime": "#/$defs/DateTimeExpr",
+              "exists": "#/$defs/ExistsExpr",
+              "function": "#/$defs/FunctionExpr",
+              "in": "#/$defs/InExpr",
+              "iri": "#/$defs/Iri",
+              "lang_matches": "#/$defs/LangMatchesExpr",
+              "literal": "#/$defs/LiteralValue",
+              "not": "#/$defs/NotExpr",
+              "not_exists": "#/$defs/NotExistsExpr",
+              "prefixed_name": "#/$defs/PrefixedName",
+              "regex": "#/$defs/RegexExpr",
+              "unary": "#/$defs/UnaryExpr",
+              "var": "#/$defs/Var"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Var"
+            },
+            {
+              "$ref": "#/$defs/Iri"
+            },
+            {
+              "$ref": "#/$defs/PrefixedName"
+            },
+            {
+              "$ref": "#/$defs/LiteralValue"
+            },
+            {
+              "$ref": "#/$defs/BinaryExpr"
+            },
+            {
+              "$ref": "#/$defs/UnaryExpr"
+            },
+            {
+              "$ref": "#/$defs/NotExpr"
+            },
+            {
+              "$ref": "#/$defs/InExpr"
+            },
+            {
+              "$ref": "#/$defs/FunctionExpr"
+            },
+            {
+              "$ref": "#/$defs/RegexExpr"
+            },
+            {
+              "$ref": "#/$defs/BoundExpr"
+            },
+            {
+              "$ref": "#/$defs/LangMatchesExpr"
+            },
+            {
+              "$ref": "#/$defs/NotExistsExpr"
+            },
+            {
+              "$ref": "#/$defs/ExistsExpr"
+            },
+            {
+              "$ref": "#/$defs/AggregateExpr"
+            },
+            {
+              "$ref": "#/$defs/DateTimeExpr"
+            }
+          ],
+          "title": "Left"
+        },
+        "op": {
+          "title": "Op",
+          "type": "string"
+        },
+        "right": {
+          "discriminator": {
+            "mapping": {
+              "aggregate": "#/$defs/AggregateExpr",
+              "binary": "#/$defs/BinaryExpr",
+              "bound": "#/$defs/BoundExpr",
+              "datetime": "#/$defs/DateTimeExpr",
+              "exists": "#/$defs/ExistsExpr",
+              "function": "#/$defs/FunctionExpr",
+              "in": "#/$defs/InExpr",
+              "iri": "#/$defs/Iri",
+              "lang_matches": "#/$defs/LangMatchesExpr",
+              "literal": "#/$defs/LiteralValue",
+              "not": "#/$defs/NotExpr",
+              "not_exists": "#/$defs/NotExistsExpr",
+              "prefixed_name": "#/$defs/PrefixedName",
+              "regex": "#/$defs/RegexExpr",
+              "unary": "#/$defs/UnaryExpr",
+              "var": "#/$defs/Var"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Var"
+            },
+            {
+              "$ref": "#/$defs/Iri"
+            },
+            {
+              "$ref": "#/$defs/PrefixedName"
+            },
+            {
+              "$ref": "#/$defs/LiteralValue"
+            },
+            {
+              "$ref": "#/$defs/BinaryExpr"
+            },
+            {
+              "$ref": "#/$defs/UnaryExpr"
+            },
+            {
+              "$ref": "#/$defs/NotExpr"
+            },
+            {
+              "$ref": "#/$defs/InExpr"
+            },
+            {
+              "$ref": "#/$defs/FunctionExpr"
+            },
+            {
+              "$ref": "#/$defs/RegexExpr"
+            },
+            {
+              "$ref": "#/$defs/BoundExpr"
+            },
+            {
+              "$ref": "#/$defs/LangMatchesExpr"
+            },
+            {
+              "$ref": "#/$defs/NotExistsExpr"
+            },
+            {
+              "$ref": "#/$defs/ExistsExpr"
+            },
+            {
+              "$ref": "#/$defs/AggregateExpr"
+            },
+            {
+              "$ref": "#/$defs/DateTimeExpr"
+            }
+          ],
+          "title": "Right"
+        }
+      },
+      "required": [
+        "op",
+        "left",
+        "right"
+      ],
+      "title": "BinaryExpr",
+      "type": "object"
+    },
+    "BindPattern": {
+      "additionalProperties": false,
+      "properties": {
+        "expression": {
+          "discriminator": {
+            "mapping": {
+              "aggregate": "#/$defs/AggregateExpr",
+              "binary": "#/$defs/BinaryExpr",
+              "bound": "#/$defs/BoundExpr",
+              "datetime": "#/$defs/DateTimeExpr",
+              "exists": "#/$defs/ExistsExpr",
+              "function": "#/$defs/FunctionExpr",
+              "in": "#/$defs/InExpr",
+              "iri": "#/$defs/Iri",
+              "lang_matches": "#/$defs/LangMatchesExpr",
+              "literal": "#/$defs/LiteralValue",
+              "not": "#/$defs/NotExpr",
+              "not_exists": "#/$defs/NotExistsExpr",
+              "prefixed_name": "#/$defs/PrefixedName",
+              "regex": "#/$defs/RegexExpr",
+              "unary": "#/$defs/UnaryExpr",
+              "var": "#/$defs/Var"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Var"
+            },
+            {
+              "$ref": "#/$defs/Iri"
+            },
+            {
+              "$ref": "#/$defs/PrefixedName"
+            },
+            {
+              "$ref": "#/$defs/LiteralValue"
+            },
+            {
+              "$ref": "#/$defs/BinaryExpr"
+            },
+            {
+              "$ref": "#/$defs/UnaryExpr"
+            },
+            {
+              "$ref": "#/$defs/NotExpr"
+            },
+            {
+              "$ref": "#/$defs/InExpr"
+            },
+            {
+              "$ref": "#/$defs/FunctionExpr"
+            },
+            {
+              "$ref": "#/$defs/RegexExpr"
+            },
+            {
+              "$ref": "#/$defs/BoundExpr"
+            },
+            {
+              "$ref": "#/$defs/LangMatchesExpr"
+            },
+            {
+              "$ref": "#/$defs/NotExistsExpr"
+            },
+            {
+              "$ref": "#/$defs/ExistsExpr"
+            },
+            {
+              "$ref": "#/$defs/AggregateExpr"
+            },
+            {
+              "$ref": "#/$defs/DateTimeExpr"
+            }
+          ],
+          "title": "Expression"
+        },
+        "kind": {
+          "const": "bind",
+          "default": "bind",
+          "title": "Kind",
+          "type": "string"
+        },
+        "var": {
+          "$ref": "#/$defs/Var"
+        }
+      },
+      "required": [
+        "expression",
+        "var"
+      ],
+      "title": "BindPattern",
+      "type": "object"
+    },
+    "BoundExpr": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "bound",
+          "default": "bound",
+          "title": "Kind",
+          "type": "string"
+        },
+        "var": {
+          "$ref": "#/$defs/Var"
+        }
+      },
+      "required": [
+        "var"
+      ],
+      "title": "BoundExpr",
+      "type": "object"
+    },
+    "ConstructPlan": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "construct",
+          "default": "construct",
+          "title": "Kind",
+          "type": "string"
+        },
+        "limit": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Limit"
+        },
+        "offset": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Offset"
+        },
+        "prefixes": {
+          "items": {
+            "$ref": "#/$defs/Prefix"
+          },
+          "title": "Prefixes",
+          "type": "array"
+        },
+        "template": {
+          "items": {
+            "$ref": "#/$defs/TriplePattern"
+          },
+          "title": "Template",
+          "type": "array"
+        },
+        "where": {
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "bind": "#/$defs/BindPattern",
+                "filter": "#/$defs/FilterPattern",
+                "graph": "#/$defs/GraphPattern",
+                "group": "#/$defs/GroupPattern",
+                "minus": "#/$defs/MinusPattern",
+                "optional": "#/$defs/OptionalPattern",
+                "service": "#/$defs/ServicePattern",
+                "subquery": "#/$defs/SubqueryPattern",
+                "triple": "#/$defs/TriplePattern",
+                "union": "#/$defs/UnionPattern",
+                "values": "#/$defs/ValuesPattern"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/TriplePattern"
+              },
+              {
+                "$ref": "#/$defs/GroupPattern"
+              },
+              {
+                "$ref": "#/$defs/OptionalPattern"
+              },
+              {
+                "$ref": "#/$defs/UnionPattern"
+              },
+              {
+                "$ref": "#/$defs/MinusPattern"
+              },
+              {
+                "$ref": "#/$defs/FilterPattern"
+              },
+              {
+                "$ref": "#/$defs/BindPattern"
+              },
+              {
+                "$ref": "#/$defs/ValuesPattern"
+              },
+              {
+                "$ref": "#/$defs/GraphPattern"
+              },
+              {
+                "$ref": "#/$defs/ServicePattern"
+              },
+              {
+                "$ref": "#/$defs/SubqueryPattern"
+              }
+            ]
+          },
+          "title": "Where",
+          "type": "array"
+        }
+      },
+      "title": "ConstructPlan",
+      "type": "object"
+    },
+    "DateTimeExpr": {
+      "additionalProperties": false,
+      "description": "Date/time accessor: ``year(?d)``, ``now()``, etc.",
+      "properties": {
+        "accessor": {
+          "title": "Accessor",
+          "type": "string"
+        },
+        "kind": {
+          "const": "datetime",
+          "default": "datetime",
+          "title": "Kind",
+          "type": "string"
+        },
+        "operand": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "aggregate": "#/$defs/AggregateExpr",
+                  "binary": "#/$defs/BinaryExpr",
+                  "bound": "#/$defs/BoundExpr",
+                  "datetime": "#/$defs/DateTimeExpr",
+                  "exists": "#/$defs/ExistsExpr",
+                  "function": "#/$defs/FunctionExpr",
+                  "in": "#/$defs/InExpr",
+                  "iri": "#/$defs/Iri",
+                  "lang_matches": "#/$defs/LangMatchesExpr",
+                  "literal": "#/$defs/LiteralValue",
+                  "not": "#/$defs/NotExpr",
+                  "not_exists": "#/$defs/NotExistsExpr",
+                  "prefixed_name": "#/$defs/PrefixedName",
+                  "regex": "#/$defs/RegexExpr",
+                  "unary": "#/$defs/UnaryExpr",
+                  "var": "#/$defs/Var"
+                },
+                "propertyName": "kind"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/Var"
+                },
+                {
+                  "$ref": "#/$defs/Iri"
+                },
+                {
+                  "$ref": "#/$defs/PrefixedName"
+                },
+                {
+                  "$ref": "#/$defs/LiteralValue"
+                },
+                {
+                  "$ref": "#/$defs/BinaryExpr"
+                },
+                {
+                  "$ref": "#/$defs/UnaryExpr"
+                },
+                {
+                  "$ref": "#/$defs/NotExpr"
+                },
+                {
+                  "$ref": "#/$defs/InExpr"
+                },
+                {
+                  "$ref": "#/$defs/FunctionExpr"
+                },
+                {
+                  "$ref": "#/$defs/RegexExpr"
+                },
+                {
+                  "$ref": "#/$defs/BoundExpr"
+                },
+                {
+                  "$ref": "#/$defs/LangMatchesExpr"
+                },
+                {
+                  "$ref": "#/$defs/NotExistsExpr"
+                },
+                {
+                  "$ref": "#/$defs/ExistsExpr"
+                },
+                {
+                  "$ref": "#/$defs/AggregateExpr"
+                },
+                {
+                  "$ref": "#/$defs/DateTimeExpr"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Operand"
+        }
+      },
+      "required": [
+        "accessor"
+      ],
+      "title": "DateTimeExpr",
+      "type": "object"
+    },
+    "ExistsExpr": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "exists",
+          "default": "exists",
+          "title": "Kind",
+          "type": "string"
+        },
+        "patterns": {
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "bind": "#/$defs/BindPattern",
+                "filter": "#/$defs/FilterPattern",
+                "graph": "#/$defs/GraphPattern",
+                "group": "#/$defs/GroupPattern",
+                "minus": "#/$defs/MinusPattern",
+                "optional": "#/$defs/OptionalPattern",
+                "service": "#/$defs/ServicePattern",
+                "subquery": "#/$defs/SubqueryPattern",
+                "triple": "#/$defs/TriplePattern",
+                "union": "#/$defs/UnionPattern",
+                "values": "#/$defs/ValuesPattern"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/TriplePattern"
+              },
+              {
+                "$ref": "#/$defs/GroupPattern"
+              },
+              {
+                "$ref": "#/$defs/OptionalPattern"
+              },
+              {
+                "$ref": "#/$defs/UnionPattern"
+              },
+              {
+                "$ref": "#/$defs/MinusPattern"
+              },
+              {
+                "$ref": "#/$defs/FilterPattern"
+              },
+              {
+                "$ref": "#/$defs/BindPattern"
+              },
+              {
+                "$ref": "#/$defs/ValuesPattern"
+              },
+              {
+                "$ref": "#/$defs/GraphPattern"
+              },
+              {
+                "$ref": "#/$defs/ServicePattern"
+              },
+              {
+                "$ref": "#/$defs/SubqueryPattern"
+              }
+            ]
+          },
+          "title": "Patterns",
+          "type": "array"
+        }
+      },
+      "required": [
+        "patterns"
+      ],
+      "title": "ExistsExpr",
+      "type": "object"
+    },
+    "FilterPattern": {
+      "additionalProperties": false,
+      "properties": {
+        "expression": {
+          "discriminator": {
+            "mapping": {
+              "aggregate": "#/$defs/AggregateExpr",
+              "binary": "#/$defs/BinaryExpr",
+              "bound": "#/$defs/BoundExpr",
+              "datetime": "#/$defs/DateTimeExpr",
+              "exists": "#/$defs/ExistsExpr",
+              "function": "#/$defs/FunctionExpr",
+              "in": "#/$defs/InExpr",
+              "iri": "#/$defs/Iri",
+              "lang_matches": "#/$defs/LangMatchesExpr",
+              "literal": "#/$defs/LiteralValue",
+              "not": "#/$defs/NotExpr",
+              "not_exists": "#/$defs/NotExistsExpr",
+              "prefixed_name": "#/$defs/PrefixedName",
+              "regex": "#/$defs/RegexExpr",
+              "unary": "#/$defs/UnaryExpr",
+              "var": "#/$defs/Var"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Var"
+            },
+            {
+              "$ref": "#/$defs/Iri"
+            },
+            {
+              "$ref": "#/$defs/PrefixedName"
+            },
+            {
+              "$ref": "#/$defs/LiteralValue"
+            },
+            {
+              "$ref": "#/$defs/BinaryExpr"
+            },
+            {
+              "$ref": "#/$defs/UnaryExpr"
+            },
+            {
+              "$ref": "#/$defs/NotExpr"
+            },
+            {
+              "$ref": "#/$defs/InExpr"
+            },
+            {
+              "$ref": "#/$defs/FunctionExpr"
+            },
+            {
+              "$ref": "#/$defs/RegexExpr"
+            },
+            {
+              "$ref": "#/$defs/BoundExpr"
+            },
+            {
+              "$ref": "#/$defs/LangMatchesExpr"
+            },
+            {
+              "$ref": "#/$defs/NotExistsExpr"
+            },
+            {
+              "$ref": "#/$defs/ExistsExpr"
+            },
+            {
+              "$ref": "#/$defs/AggregateExpr"
+            },
+            {
+              "$ref": "#/$defs/DateTimeExpr"
+            }
+          ],
+          "title": "Expression"
+        },
+        "kind": {
+          "const": "filter",
+          "default": "filter",
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "expression"
+      ],
+      "title": "FilterPattern",
+      "type": "object"
+    },
+    "FunctionExpr": {
+      "additionalProperties": false,
+      "properties": {
+        "args": {
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "aggregate": "#/$defs/AggregateExpr",
+                "binary": "#/$defs/BinaryExpr",
+                "bound": "#/$defs/BoundExpr",
+                "datetime": "#/$defs/DateTimeExpr",
+                "exists": "#/$defs/ExistsExpr",
+                "function": "#/$defs/FunctionExpr",
+                "in": "#/$defs/InExpr",
+                "iri": "#/$defs/Iri",
+                "lang_matches": "#/$defs/LangMatchesExpr",
+                "literal": "#/$defs/LiteralValue",
+                "not": "#/$defs/NotExpr",
+                "not_exists": "#/$defs/NotExistsExpr",
+                "prefixed_name": "#/$defs/PrefixedName",
+                "regex": "#/$defs/RegexExpr",
+                "unary": "#/$defs/UnaryExpr",
+                "var": "#/$defs/Var"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/Var"
+              },
+              {
+                "$ref": "#/$defs/Iri"
+              },
+              {
+                "$ref": "#/$defs/PrefixedName"
+              },
+              {
+                "$ref": "#/$defs/LiteralValue"
+              },
+              {
+                "$ref": "#/$defs/BinaryExpr"
+              },
+              {
+                "$ref": "#/$defs/UnaryExpr"
+              },
+              {
+                "$ref": "#/$defs/NotExpr"
+              },
+              {
+                "$ref": "#/$defs/InExpr"
+              },
+              {
+                "$ref": "#/$defs/FunctionExpr"
+              },
+              {
+                "$ref": "#/$defs/RegexExpr"
+              },
+              {
+                "$ref": "#/$defs/BoundExpr"
+              },
+              {
+                "$ref": "#/$defs/LangMatchesExpr"
+              },
+              {
+                "$ref": "#/$defs/NotExistsExpr"
+              },
+              {
+                "$ref": "#/$defs/ExistsExpr"
+              },
+              {
+                "$ref": "#/$defs/AggregateExpr"
+              },
+              {
+                "$ref": "#/$defs/DateTimeExpr"
+              }
+            ]
+          },
+          "title": "Args",
+          "type": "array"
+        },
+        "kind": {
+          "const": "function",
+          "default": "function",
+          "title": "Kind",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "args"
+      ],
+      "title": "FunctionExpr",
+      "type": "object"
+    },
+    "GraphPattern": {
+      "additionalProperties": false,
+      "description": "``GRAPH ?g { ... }`` \u2014 query a specific named graph.",
+      "properties": {
+        "graph": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Var"
+            },
+            {
+              "$ref": "#/$defs/Iri"
+            },
+            {
+              "$ref": "#/$defs/PrefixedName"
+            }
+          ],
+          "title": "Graph"
+        },
+        "kind": {
+          "const": "graph",
+          "default": "graph",
+          "title": "Kind",
+          "type": "string"
+        },
+        "patterns": {
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "bind": "#/$defs/BindPattern",
+                "filter": "#/$defs/FilterPattern",
+                "graph": "#/$defs/GraphPattern",
+                "group": "#/$defs/GroupPattern",
+                "minus": "#/$defs/MinusPattern",
+                "optional": "#/$defs/OptionalPattern",
+                "service": "#/$defs/ServicePattern",
+                "subquery": "#/$defs/SubqueryPattern",
+                "triple": "#/$defs/TriplePattern",
+                "union": "#/$defs/UnionPattern",
+                "values": "#/$defs/ValuesPattern"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/TriplePattern"
+              },
+              {
+                "$ref": "#/$defs/GroupPattern"
+              },
+              {
+                "$ref": "#/$defs/OptionalPattern"
+              },
+              {
+                "$ref": "#/$defs/UnionPattern"
+              },
+              {
+                "$ref": "#/$defs/MinusPattern"
+              },
+              {
+                "$ref": "#/$defs/FilterPattern"
+              },
+              {
+                "$ref": "#/$defs/BindPattern"
+              },
+              {
+                "$ref": "#/$defs/ValuesPattern"
+              },
+              {
+                "$ref": "#/$defs/GraphPattern"
+              },
+              {
+                "$ref": "#/$defs/ServicePattern"
+              },
+              {
+                "$ref": "#/$defs/SubqueryPattern"
+              }
+            ]
+          },
+          "title": "Patterns",
+          "type": "array"
+        }
+      },
+      "required": [
+        "graph",
+        "patterns"
+      ],
+      "title": "GraphPattern",
+      "type": "object"
+    },
+    "GroupPattern": {
+      "additionalProperties": false,
+      "description": "A group ``{ ... }`` of patterns.",
+      "properties": {
+        "kind": {
+          "const": "group",
+          "default": "group",
+          "title": "Kind",
+          "type": "string"
+        },
+        "patterns": {
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "bind": "#/$defs/BindPattern",
+                "filter": "#/$defs/FilterPattern",
+                "graph": "#/$defs/GraphPattern",
+                "group": "#/$defs/GroupPattern",
+                "minus": "#/$defs/MinusPattern",
+                "optional": "#/$defs/OptionalPattern",
+                "service": "#/$defs/ServicePattern",
+                "subquery": "#/$defs/SubqueryPattern",
+                "triple": "#/$defs/TriplePattern",
+                "union": "#/$defs/UnionPattern",
+                "values": "#/$defs/ValuesPattern"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/TriplePattern"
+              },
+              {
+                "$ref": "#/$defs/GroupPattern"
+              },
+              {
+                "$ref": "#/$defs/OptionalPattern"
+              },
+              {
+                "$ref": "#/$defs/UnionPattern"
+              },
+              {
+                "$ref": "#/$defs/MinusPattern"
+              },
+              {
+                "$ref": "#/$defs/FilterPattern"
+              },
+              {
+                "$ref": "#/$defs/BindPattern"
+              },
+              {
+                "$ref": "#/$defs/ValuesPattern"
+              },
+              {
+                "$ref": "#/$defs/GraphPattern"
+              },
+              {
+                "$ref": "#/$defs/ServicePattern"
+              },
+              {
+                "$ref": "#/$defs/SubqueryPattern"
+              }
+            ]
+          },
+          "title": "Patterns",
+          "type": "array"
+        }
+      },
+      "required": [
+        "patterns"
+      ],
+      "title": "GroupPattern",
+      "type": "object"
+    },
+    "InExpr": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "in",
+          "default": "in",
+          "title": "Kind",
+          "type": "string"
+        },
+        "negated": {
+          "default": false,
+          "title": "Negated",
+          "type": "boolean"
+        },
+        "operand": {
+          "discriminator": {
+            "mapping": {
+              "aggregate": "#/$defs/AggregateExpr",
+              "binary": "#/$defs/BinaryExpr",
+              "bound": "#/$defs/BoundExpr",
+              "datetime": "#/$defs/DateTimeExpr",
+              "exists": "#/$defs/ExistsExpr",
+              "function": "#/$defs/FunctionExpr",
+              "in": "#/$defs/InExpr",
+              "iri": "#/$defs/Iri",
+              "lang_matches": "#/$defs/LangMatchesExpr",
+              "literal": "#/$defs/LiteralValue",
+              "not": "#/$defs/NotExpr",
+              "not_exists": "#/$defs/NotExistsExpr",
+              "prefixed_name": "#/$defs/PrefixedName",
+              "regex": "#/$defs/RegexExpr",
+              "unary": "#/$defs/UnaryExpr",
+              "var": "#/$defs/Var"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Var"
+            },
+            {
+              "$ref": "#/$defs/Iri"
+            },
+            {
+              "$ref": "#/$defs/PrefixedName"
+            },
+            {
+              "$ref": "#/$defs/LiteralValue"
+            },
+            {
+              "$ref": "#/$defs/BinaryExpr"
+            },
+            {
+              "$ref": "#/$defs/UnaryExpr"
+            },
+            {
+              "$ref": "#/$defs/NotExpr"
+            },
+            {
+              "$ref": "#/$defs/InExpr"
+            },
+            {
+              "$ref": "#/$defs/FunctionExpr"
+            },
+            {
+              "$ref": "#/$defs/RegexExpr"
+            },
+            {
+              "$ref": "#/$defs/BoundExpr"
+            },
+            {
+              "$ref": "#/$defs/LangMatchesExpr"
+            },
+            {
+              "$ref": "#/$defs/NotExistsExpr"
+            },
+            {
+              "$ref": "#/$defs/ExistsExpr"
+            },
+            {
+              "$ref": "#/$defs/AggregateExpr"
+            },
+            {
+              "$ref": "#/$defs/DateTimeExpr"
+            }
+          ],
+          "title": "Operand"
+        },
+        "options": {
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "aggregate": "#/$defs/AggregateExpr",
+                "binary": "#/$defs/BinaryExpr",
+                "bound": "#/$defs/BoundExpr",
+                "datetime": "#/$defs/DateTimeExpr",
+                "exists": "#/$defs/ExistsExpr",
+                "function": "#/$defs/FunctionExpr",
+                "in": "#/$defs/InExpr",
+                "iri": "#/$defs/Iri",
+                "lang_matches": "#/$defs/LangMatchesExpr",
+                "literal": "#/$defs/LiteralValue",
+                "not": "#/$defs/NotExpr",
+                "not_exists": "#/$defs/NotExistsExpr",
+                "prefixed_name": "#/$defs/PrefixedName",
+                "regex": "#/$defs/RegexExpr",
+                "unary": "#/$defs/UnaryExpr",
+                "var": "#/$defs/Var"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/Var"
+              },
+              {
+                "$ref": "#/$defs/Iri"
+              },
+              {
+                "$ref": "#/$defs/PrefixedName"
+              },
+              {
+                "$ref": "#/$defs/LiteralValue"
+              },
+              {
+                "$ref": "#/$defs/BinaryExpr"
+              },
+              {
+                "$ref": "#/$defs/UnaryExpr"
+              },
+              {
+                "$ref": "#/$defs/NotExpr"
+              },
+              {
+                "$ref": "#/$defs/InExpr"
+              },
+              {
+                "$ref": "#/$defs/FunctionExpr"
+              },
+              {
+                "$ref": "#/$defs/RegexExpr"
+              },
+              {
+                "$ref": "#/$defs/BoundExpr"
+              },
+              {
+                "$ref": "#/$defs/LangMatchesExpr"
+              },
+              {
+                "$ref": "#/$defs/NotExistsExpr"
+              },
+              {
+                "$ref": "#/$defs/ExistsExpr"
+              },
+              {
+                "$ref": "#/$defs/AggregateExpr"
+              },
+              {
+                "$ref": "#/$defs/DateTimeExpr"
+              }
+            ]
+          },
+          "title": "Options",
+          "type": "array"
+        }
+      },
+      "required": [
+        "operand",
+        "options"
+      ],
+      "title": "InExpr",
+      "type": "object"
+    },
+    "Iri": {
+      "additionalProperties": false,
+      "description": "An absolute IRI.",
+      "properties": {
+        "kind": {
+          "const": "iri",
+          "default": "iri",
+          "title": "Kind",
+          "type": "string"
+        },
+        "value": {
+          "title": "Value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "value"
+      ],
+      "title": "Iri",
+      "type": "object"
+    },
+    "LangMatchesExpr": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "lang_matches",
+          "default": "lang_matches",
+          "title": "Kind",
+          "type": "string"
+        },
+        "range": {
+          "discriminator": {
+            "mapping": {
+              "aggregate": "#/$defs/AggregateExpr",
+              "binary": "#/$defs/BinaryExpr",
+              "bound": "#/$defs/BoundExpr",
+              "datetime": "#/$defs/DateTimeExpr",
+              "exists": "#/$defs/ExistsExpr",
+              "function": "#/$defs/FunctionExpr",
+              "in": "#/$defs/InExpr",
+              "iri": "#/$defs/Iri",
+              "lang_matches": "#/$defs/LangMatchesExpr",
+              "literal": "#/$defs/LiteralValue",
+              "not": "#/$defs/NotExpr",
+              "not_exists": "#/$defs/NotExistsExpr",
+              "prefixed_name": "#/$defs/PrefixedName",
+              "regex": "#/$defs/RegexExpr",
+              "unary": "#/$defs/UnaryExpr",
+              "var": "#/$defs/Var"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Var"
+            },
+            {
+              "$ref": "#/$defs/Iri"
+            },
+            {
+              "$ref": "#/$defs/PrefixedName"
+            },
+            {
+              "$ref": "#/$defs/LiteralValue"
+            },
+            {
+              "$ref": "#/$defs/BinaryExpr"
+            },
+            {
+              "$ref": "#/$defs/UnaryExpr"
+            },
+            {
+              "$ref": "#/$defs/NotExpr"
+            },
+            {
+              "$ref": "#/$defs/InExpr"
+            },
+            {
+              "$ref": "#/$defs/FunctionExpr"
+            },
+            {
+              "$ref": "#/$defs/RegexExpr"
+            },
+            {
+              "$ref": "#/$defs/BoundExpr"
+            },
+            {
+              "$ref": "#/$defs/LangMatchesExpr"
+            },
+            {
+              "$ref": "#/$defs/NotExistsExpr"
+            },
+            {
+              "$ref": "#/$defs/ExistsExpr"
+            },
+            {
+              "$ref": "#/$defs/AggregateExpr"
+            },
+            {
+              "$ref": "#/$defs/DateTimeExpr"
+            }
+          ],
+          "title": "Range"
+        },
+        "tag": {
+          "discriminator": {
+            "mapping": {
+              "aggregate": "#/$defs/AggregateExpr",
+              "binary": "#/$defs/BinaryExpr",
+              "bound": "#/$defs/BoundExpr",
+              "datetime": "#/$defs/DateTimeExpr",
+              "exists": "#/$defs/ExistsExpr",
+              "function": "#/$defs/FunctionExpr",
+              "in": "#/$defs/InExpr",
+              "iri": "#/$defs/Iri",
+              "lang_matches": "#/$defs/LangMatchesExpr",
+              "literal": "#/$defs/LiteralValue",
+              "not": "#/$defs/NotExpr",
+              "not_exists": "#/$defs/NotExistsExpr",
+              "prefixed_name": "#/$defs/PrefixedName",
+              "regex": "#/$defs/RegexExpr",
+              "unary": "#/$defs/UnaryExpr",
+              "var": "#/$defs/Var"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Var"
+            },
+            {
+              "$ref": "#/$defs/Iri"
+            },
+            {
+              "$ref": "#/$defs/PrefixedName"
+            },
+            {
+              "$ref": "#/$defs/LiteralValue"
+            },
+            {
+              "$ref": "#/$defs/BinaryExpr"
+            },
+            {
+              "$ref": "#/$defs/UnaryExpr"
+            },
+            {
+              "$ref": "#/$defs/NotExpr"
+            },
+            {
+              "$ref": "#/$defs/InExpr"
+            },
+            {
+              "$ref": "#/$defs/FunctionExpr"
+            },
+            {
+              "$ref": "#/$defs/RegexExpr"
+            },
+            {
+              "$ref": "#/$defs/BoundExpr"
+            },
+            {
+              "$ref": "#/$defs/LangMatchesExpr"
+            },
+            {
+              "$ref": "#/$defs/NotExistsExpr"
+            },
+            {
+              "$ref": "#/$defs/ExistsExpr"
+            },
+            {
+              "$ref": "#/$defs/AggregateExpr"
+            },
+            {
+              "$ref": "#/$defs/DateTimeExpr"
+            }
+          ],
+          "title": "Tag"
+        }
+      },
+      "required": [
+        "tag",
+        "range"
+      ],
+      "title": "LangMatchesExpr",
+      "type": "object"
+    },
+    "LiteralValue": {
+      "additionalProperties": false,
+      "description": "A typed RDF literal.\n\nExactly one of ``datatype`` or ``lang`` may be set; setting both is invalid.",
+      "properties": {
+        "datatype": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Datatype"
+        },
+        "kind": {
+          "const": "literal",
+          "default": "literal",
+          "title": "Kind",
+          "type": "string"
+        },
+        "lang": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Lang"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "boolean"
+            }
+          ],
+          "title": "Value"
+        }
+      },
+      "required": [
+        "value"
+      ],
+      "title": "LiteralValue",
+      "type": "object"
+    },
+    "MinusPattern": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "minus",
+          "default": "minus",
+          "title": "Kind",
+          "type": "string"
+        },
+        "patterns": {
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "bind": "#/$defs/BindPattern",
+                "filter": "#/$defs/FilterPattern",
+                "graph": "#/$defs/GraphPattern",
+                "group": "#/$defs/GroupPattern",
+                "minus": "#/$defs/MinusPattern",
+                "optional": "#/$defs/OptionalPattern",
+                "service": "#/$defs/ServicePattern",
+                "subquery": "#/$defs/SubqueryPattern",
+                "triple": "#/$defs/TriplePattern",
+                "union": "#/$defs/UnionPattern",
+                "values": "#/$defs/ValuesPattern"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/TriplePattern"
+              },
+              {
+                "$ref": "#/$defs/GroupPattern"
+              },
+              {
+                "$ref": "#/$defs/OptionalPattern"
+              },
+              {
+                "$ref": "#/$defs/UnionPattern"
+              },
+              {
+                "$ref": "#/$defs/MinusPattern"
+              },
+              {
+                "$ref": "#/$defs/FilterPattern"
+              },
+              {
+                "$ref": "#/$defs/BindPattern"
+              },
+              {
+                "$ref": "#/$defs/ValuesPattern"
+              },
+              {
+                "$ref": "#/$defs/GraphPattern"
+              },
+              {
+                "$ref": "#/$defs/ServicePattern"
+              },
+              {
+                "$ref": "#/$defs/SubqueryPattern"
+              }
+            ]
+          },
+          "title": "Patterns",
+          "type": "array"
+        }
+      },
+      "required": [
+        "patterns"
+      ],
+      "title": "MinusPattern",
+      "type": "object"
+    },
+    "NotExistsExpr": {
+      "additionalProperties": false,
+      "description": "``FILTER NOT EXISTS { ... }``.",
+      "properties": {
+        "kind": {
+          "const": "not_exists",
+          "default": "not_exists",
+          "title": "Kind",
+          "type": "string"
+        },
+        "patterns": {
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "bind": "#/$defs/BindPattern",
+                "filter": "#/$defs/FilterPattern",
+                "graph": "#/$defs/GraphPattern",
+                "group": "#/$defs/GroupPattern",
+                "minus": "#/$defs/MinusPattern",
+                "optional": "#/$defs/OptionalPattern",
+                "service": "#/$defs/ServicePattern",
+                "subquery": "#/$defs/SubqueryPattern",
+                "triple": "#/$defs/TriplePattern",
+                "union": "#/$defs/UnionPattern",
+                "values": "#/$defs/ValuesPattern"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/TriplePattern"
+              },
+              {
+                "$ref": "#/$defs/GroupPattern"
+              },
+              {
+                "$ref": "#/$defs/OptionalPattern"
+              },
+              {
+                "$ref": "#/$defs/UnionPattern"
+              },
+              {
+                "$ref": "#/$defs/MinusPattern"
+              },
+              {
+                "$ref": "#/$defs/FilterPattern"
+              },
+              {
+                "$ref": "#/$defs/BindPattern"
+              },
+              {
+                "$ref": "#/$defs/ValuesPattern"
+              },
+              {
+                "$ref": "#/$defs/GraphPattern"
+              },
+              {
+                "$ref": "#/$defs/ServicePattern"
+              },
+              {
+                "$ref": "#/$defs/SubqueryPattern"
+              }
+            ]
+          },
+          "title": "Patterns",
+          "type": "array"
+        }
+      },
+      "required": [
+        "patterns"
+      ],
+      "title": "NotExistsExpr",
+      "type": "object"
+    },
+    "NotExpr": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "not",
+          "default": "not",
+          "title": "Kind",
+          "type": "string"
+        },
+        "operand": {
+          "discriminator": {
+            "mapping": {
+              "aggregate": "#/$defs/AggregateExpr",
+              "binary": "#/$defs/BinaryExpr",
+              "bound": "#/$defs/BoundExpr",
+              "datetime": "#/$defs/DateTimeExpr",
+              "exists": "#/$defs/ExistsExpr",
+              "function": "#/$defs/FunctionExpr",
+              "in": "#/$defs/InExpr",
+              "iri": "#/$defs/Iri",
+              "lang_matches": "#/$defs/LangMatchesExpr",
+              "literal": "#/$defs/LiteralValue",
+              "not": "#/$defs/NotExpr",
+              "not_exists": "#/$defs/NotExistsExpr",
+              "prefixed_name": "#/$defs/PrefixedName",
+              "regex": "#/$defs/RegexExpr",
+              "unary": "#/$defs/UnaryExpr",
+              "var": "#/$defs/Var"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Var"
+            },
+            {
+              "$ref": "#/$defs/Iri"
+            },
+            {
+              "$ref": "#/$defs/PrefixedName"
+            },
+            {
+              "$ref": "#/$defs/LiteralValue"
+            },
+            {
+              "$ref": "#/$defs/BinaryExpr"
+            },
+            {
+              "$ref": "#/$defs/UnaryExpr"
+            },
+            {
+              "$ref": "#/$defs/NotExpr"
+            },
+            {
+              "$ref": "#/$defs/InExpr"
+            },
+            {
+              "$ref": "#/$defs/FunctionExpr"
+            },
+            {
+              "$ref": "#/$defs/RegexExpr"
+            },
+            {
+              "$ref": "#/$defs/BoundExpr"
+            },
+            {
+              "$ref": "#/$defs/LangMatchesExpr"
+            },
+            {
+              "$ref": "#/$defs/NotExistsExpr"
+            },
+            {
+              "$ref": "#/$defs/ExistsExpr"
+            },
+            {
+              "$ref": "#/$defs/AggregateExpr"
+            },
+            {
+              "$ref": "#/$defs/DateTimeExpr"
+            }
+          ],
+          "title": "Operand"
+        }
+      },
+      "required": [
+        "operand"
+      ],
+      "title": "NotExpr",
+      "type": "object"
+    },
+    "OptionalPattern": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "optional",
+          "default": "optional",
+          "title": "Kind",
+          "type": "string"
+        },
+        "patterns": {
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "bind": "#/$defs/BindPattern",
+                "filter": "#/$defs/FilterPattern",
+                "graph": "#/$defs/GraphPattern",
+                "group": "#/$defs/GroupPattern",
+                "minus": "#/$defs/MinusPattern",
+                "optional": "#/$defs/OptionalPattern",
+                "service": "#/$defs/ServicePattern",
+                "subquery": "#/$defs/SubqueryPattern",
+                "triple": "#/$defs/TriplePattern",
+                "union": "#/$defs/UnionPattern",
+                "values": "#/$defs/ValuesPattern"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/TriplePattern"
+              },
+              {
+                "$ref": "#/$defs/GroupPattern"
+              },
+              {
+                "$ref": "#/$defs/OptionalPattern"
+              },
+              {
+                "$ref": "#/$defs/UnionPattern"
+              },
+              {
+                "$ref": "#/$defs/MinusPattern"
+              },
+              {
+                "$ref": "#/$defs/FilterPattern"
+              },
+              {
+                "$ref": "#/$defs/BindPattern"
+              },
+              {
+                "$ref": "#/$defs/ValuesPattern"
+              },
+              {
+                "$ref": "#/$defs/GraphPattern"
+              },
+              {
+                "$ref": "#/$defs/ServicePattern"
+              },
+              {
+                "$ref": "#/$defs/SubqueryPattern"
+              }
+            ]
+          },
+          "title": "Patterns",
+          "type": "array"
+        }
+      },
+      "required": [
+        "patterns"
+      ],
+      "title": "OptionalPattern",
+      "type": "object"
+    },
+    "OrderClause": {
+      "additionalProperties": false,
+      "properties": {
+        "descending": {
+          "default": false,
+          "title": "Descending",
+          "type": "boolean"
+        },
+        "expression": {
+          "discriminator": {
+            "mapping": {
+              "aggregate": "#/$defs/AggregateExpr",
+              "binary": "#/$defs/BinaryExpr",
+              "bound": "#/$defs/BoundExpr",
+              "datetime": "#/$defs/DateTimeExpr",
+              "exists": "#/$defs/ExistsExpr",
+              "function": "#/$defs/FunctionExpr",
+              "in": "#/$defs/InExpr",
+              "iri": "#/$defs/Iri",
+              "lang_matches": "#/$defs/LangMatchesExpr",
+              "literal": "#/$defs/LiteralValue",
+              "not": "#/$defs/NotExpr",
+              "not_exists": "#/$defs/NotExistsExpr",
+              "prefixed_name": "#/$defs/PrefixedName",
+              "regex": "#/$defs/RegexExpr",
+              "unary": "#/$defs/UnaryExpr",
+              "var": "#/$defs/Var"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Var"
+            },
+            {
+              "$ref": "#/$defs/Iri"
+            },
+            {
+              "$ref": "#/$defs/PrefixedName"
+            },
+            {
+              "$ref": "#/$defs/LiteralValue"
+            },
+            {
+              "$ref": "#/$defs/BinaryExpr"
+            },
+            {
+              "$ref": "#/$defs/UnaryExpr"
+            },
+            {
+              "$ref": "#/$defs/NotExpr"
+            },
+            {
+              "$ref": "#/$defs/InExpr"
+            },
+            {
+              "$ref": "#/$defs/FunctionExpr"
+            },
+            {
+              "$ref": "#/$defs/RegexExpr"
+            },
+            {
+              "$ref": "#/$defs/BoundExpr"
+            },
+            {
+              "$ref": "#/$defs/LangMatchesExpr"
+            },
+            {
+              "$ref": "#/$defs/NotExistsExpr"
+            },
+            {
+              "$ref": "#/$defs/ExistsExpr"
+            },
+            {
+              "$ref": "#/$defs/AggregateExpr"
+            },
+            {
+              "$ref": "#/$defs/DateTimeExpr"
+            }
+          ],
+          "title": "Expression"
+        }
+      },
+      "required": [
+        "expression"
+      ],
+      "title": "OrderClause",
+      "type": "object"
+    },
+    "Prefix": {
+      "additionalProperties": false,
+      "description": "Declares ``PREFIX prefix: <iri>`` for the rendered query.",
+      "properties": {
+        "iri": {
+          "title": "Iri",
+          "type": "string"
+        },
+        "prefix": {
+          "title": "Prefix",
+          "type": "string"
+        }
+      },
+      "required": [
+        "prefix",
+        "iri"
+      ],
+      "title": "Prefix",
+      "type": "object"
+    },
+    "PrefixedName": {
+      "additionalProperties": false,
+      "description": "A ``prefix:local`` reference. Resolved against the plan's prefix map.",
+      "properties": {
+        "kind": {
+          "const": "prefixed_name",
+          "default": "prefixed_name",
+          "title": "Kind",
+          "type": "string"
+        },
+        "local": {
+          "title": "Local",
+          "type": "string"
+        },
+        "prefix": {
+          "title": "Prefix",
+          "type": "string"
+        }
+      },
+      "required": [
+        "prefix",
+        "local"
+      ],
+      "title": "PrefixedName",
+      "type": "object"
+    },
+    "Projection": {
+      "additionalProperties": false,
+      "description": "A single projection item.\n\nEither ``var`` (project variable as-is) or ``expression`` + ``alias``\n(project the value of ``expression`` AS ``alias``).",
+      "properties": {
+        "alias": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Var"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "expression": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "aggregate": "#/$defs/AggregateExpr",
+                  "binary": "#/$defs/BinaryExpr",
+                  "bound": "#/$defs/BoundExpr",
+                  "datetime": "#/$defs/DateTimeExpr",
+                  "exists": "#/$defs/ExistsExpr",
+                  "function": "#/$defs/FunctionExpr",
+                  "in": "#/$defs/InExpr",
+                  "iri": "#/$defs/Iri",
+                  "lang_matches": "#/$defs/LangMatchesExpr",
+                  "literal": "#/$defs/LiteralValue",
+                  "not": "#/$defs/NotExpr",
+                  "not_exists": "#/$defs/NotExistsExpr",
+                  "prefixed_name": "#/$defs/PrefixedName",
+                  "regex": "#/$defs/RegexExpr",
+                  "unary": "#/$defs/UnaryExpr",
+                  "var": "#/$defs/Var"
+                },
+                "propertyName": "kind"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/Var"
+                },
+                {
+                  "$ref": "#/$defs/Iri"
+                },
+                {
+                  "$ref": "#/$defs/PrefixedName"
+                },
+                {
+                  "$ref": "#/$defs/LiteralValue"
+                },
+                {
+                  "$ref": "#/$defs/BinaryExpr"
+                },
+                {
+                  "$ref": "#/$defs/UnaryExpr"
+                },
+                {
+                  "$ref": "#/$defs/NotExpr"
+                },
+                {
+                  "$ref": "#/$defs/InExpr"
+                },
+                {
+                  "$ref": "#/$defs/FunctionExpr"
+                },
+                {
+                  "$ref": "#/$defs/RegexExpr"
+                },
+                {
+                  "$ref": "#/$defs/BoundExpr"
+                },
+                {
+                  "$ref": "#/$defs/LangMatchesExpr"
+                },
+                {
+                  "$ref": "#/$defs/NotExistsExpr"
+                },
+                {
+                  "$ref": "#/$defs/ExistsExpr"
+                },
+                {
+                  "$ref": "#/$defs/AggregateExpr"
+                },
+                {
+                  "$ref": "#/$defs/DateTimeExpr"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expression"
+        },
+        "var": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Var"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "Projection",
+      "type": "object"
+    },
+    "PropertyPathAlt": {
+      "additionalProperties": false,
+      "properties": {
+        "elements": {
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "alt": "#/$defs/PropertyPathAlt",
+                "inverse": "#/$defs/PropertyPathInverse",
+                "one_or_more": "#/$defs/PropertyPathOneOrMore",
+                "seq": "#/$defs/PropertyPathSeq",
+                "term": "#/$defs/PropertyPathTerm",
+                "zero_or_more": "#/$defs/PropertyPathZeroOrMore",
+                "zero_or_one": "#/$defs/PropertyPathZeroOrOne"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/PropertyPathTerm"
+              },
+              {
+                "$ref": "#/$defs/PropertyPathInverse"
+              },
+              {
+                "$ref": "#/$defs/PropertyPathSeq"
+              },
+              {
+                "$ref": "#/$defs/PropertyPathAlt"
+              },
+              {
+                "$ref": "#/$defs/PropertyPathZeroOrMore"
+              },
+              {
+                "$ref": "#/$defs/PropertyPathOneOrMore"
+              },
+              {
+                "$ref": "#/$defs/PropertyPathZeroOrOne"
+              }
+            ]
+          },
+          "title": "Elements",
+          "type": "array"
+        },
+        "kind": {
+          "const": "alt",
+          "default": "alt",
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "elements"
+      ],
+      "title": "PropertyPathAlt",
+      "type": "object"
+    },
+    "PropertyPathInverse": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "inverse",
+          "default": "inverse",
+          "title": "Kind",
+          "type": "string"
+        },
+        "operand": {
+          "discriminator": {
+            "mapping": {
+              "alt": "#/$defs/PropertyPathAlt",
+              "inverse": "#/$defs/PropertyPathInverse",
+              "one_or_more": "#/$defs/PropertyPathOneOrMore",
+              "seq": "#/$defs/PropertyPathSeq",
+              "term": "#/$defs/PropertyPathTerm",
+              "zero_or_more": "#/$defs/PropertyPathZeroOrMore",
+              "zero_or_one": "#/$defs/PropertyPathZeroOrOne"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/PropertyPathTerm"
+            },
+            {
+              "$ref": "#/$defs/PropertyPathInverse"
+            },
+            {
+              "$ref": "#/$defs/PropertyPathSeq"
+            },
+            {
+              "$ref": "#/$defs/PropertyPathAlt"
+            },
+            {
+              "$ref": "#/$defs/PropertyPathZeroOrMore"
+            },
+            {
+              "$ref": "#/$defs/PropertyPathOneOrMore"
+            },
+            {
+              "$ref": "#/$defs/PropertyPathZeroOrOne"
+            }
+          ],
+          "title": "Operand"
+        }
+      },
+      "required": [
+        "operand"
+      ],
+      "title": "PropertyPathInverse",
+      "type": "object"
+    },
+    "PropertyPathOneOrMore": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "one_or_more",
+          "default": "one_or_more",
+          "title": "Kind",
+          "type": "string"
+        },
+        "operand": {
+          "discriminator": {
+            "mapping": {
+              "alt": "#/$defs/PropertyPathAlt",
+              "inverse": "#/$defs/PropertyPathInverse",
+              "one_or_more": "#/$defs/PropertyPathOneOrMore",
+              "seq": "#/$defs/PropertyPathSeq",
+              "term": "#/$defs/PropertyPathTerm",
+              "zero_or_more": "#/$defs/PropertyPathZeroOrMore",
+              "zero_or_one": "#/$defs/PropertyPathZeroOrOne"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/PropertyPathTerm"
+            },
+            {
+              "$ref": "#/$defs/PropertyPathInverse"
+            },
+            {
+              "$ref": "#/$defs/PropertyPathSeq"
+            },
+            {
+              "$ref": "#/$defs/PropertyPathAlt"
+            },
+            {
+              "$ref": "#/$defs/PropertyPathZeroOrMore"
+            },
+            {
+              "$ref": "#/$defs/PropertyPathOneOrMore"
+            },
+            {
+              "$ref": "#/$defs/PropertyPathZeroOrOne"
+            }
+          ],
+          "title": "Operand"
+        }
+      },
+      "required": [
+        "operand"
+      ],
+      "title": "PropertyPathOneOrMore",
+      "type": "object"
+    },
+    "PropertyPathSeq": {
+      "additionalProperties": false,
+      "properties": {
+        "elements": {
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "alt": "#/$defs/PropertyPathAlt",
+                "inverse": "#/$defs/PropertyPathInverse",
+                "one_or_more": "#/$defs/PropertyPathOneOrMore",
+                "seq": "#/$defs/PropertyPathSeq",
+                "term": "#/$defs/PropertyPathTerm",
+                "zero_or_more": "#/$defs/PropertyPathZeroOrMore",
+                "zero_or_one": "#/$defs/PropertyPathZeroOrOne"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/PropertyPathTerm"
+              },
+              {
+                "$ref": "#/$defs/PropertyPathInverse"
+              },
+              {
+                "$ref": "#/$defs/PropertyPathSeq"
+              },
+              {
+                "$ref": "#/$defs/PropertyPathAlt"
+              },
+              {
+                "$ref": "#/$defs/PropertyPathZeroOrMore"
+              },
+              {
+                "$ref": "#/$defs/PropertyPathOneOrMore"
+              },
+              {
+                "$ref": "#/$defs/PropertyPathZeroOrOne"
+              }
+            ]
+          },
+          "title": "Elements",
+          "type": "array"
+        },
+        "kind": {
+          "const": "seq",
+          "default": "seq",
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "elements"
+      ],
+      "title": "PropertyPathSeq",
+      "type": "object"
+    },
+    "PropertyPathTerm": {
+      "additionalProperties": false,
+      "description": "Atomic predicate IRI in a property path. Optionally inverted with ``^``.",
+      "properties": {
+        "inverse": {
+          "default": false,
+          "title": "Inverse",
+          "type": "boolean"
+        },
+        "iri": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Iri"
+            },
+            {
+              "$ref": "#/$defs/PrefixedName"
+            }
+          ],
+          "title": "Iri"
+        },
+        "kind": {
+          "const": "term",
+          "default": "term",
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "iri"
+      ],
+      "title": "PropertyPathTerm",
+      "type": "object"
+    },
+    "PropertyPathZeroOrMore": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "zero_or_more",
+          "default": "zero_or_more",
+          "title": "Kind",
+          "type": "string"
+        },
+        "operand": {
+          "discriminator": {
+            "mapping": {
+              "alt": "#/$defs/PropertyPathAlt",
+              "inverse": "#/$defs/PropertyPathInverse",
+              "one_or_more": "#/$defs/PropertyPathOneOrMore",
+              "seq": "#/$defs/PropertyPathSeq",
+              "term": "#/$defs/PropertyPathTerm",
+              "zero_or_more": "#/$defs/PropertyPathZeroOrMore",
+              "zero_or_one": "#/$defs/PropertyPathZeroOrOne"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/PropertyPathTerm"
+            },
+            {
+              "$ref": "#/$defs/PropertyPathInverse"
+            },
+            {
+              "$ref": "#/$defs/PropertyPathSeq"
+            },
+            {
+              "$ref": "#/$defs/PropertyPathAlt"
+            },
+            {
+              "$ref": "#/$defs/PropertyPathZeroOrMore"
+            },
+            {
+              "$ref": "#/$defs/PropertyPathOneOrMore"
+            },
+            {
+              "$ref": "#/$defs/PropertyPathZeroOrOne"
+            }
+          ],
+          "title": "Operand"
+        }
+      },
+      "required": [
+        "operand"
+      ],
+      "title": "PropertyPathZeroOrMore",
+      "type": "object"
+    },
+    "PropertyPathZeroOrOne": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "zero_or_one",
+          "default": "zero_or_one",
+          "title": "Kind",
+          "type": "string"
+        },
+        "operand": {
+          "discriminator": {
+            "mapping": {
+              "alt": "#/$defs/PropertyPathAlt",
+              "inverse": "#/$defs/PropertyPathInverse",
+              "one_or_more": "#/$defs/PropertyPathOneOrMore",
+              "seq": "#/$defs/PropertyPathSeq",
+              "term": "#/$defs/PropertyPathTerm",
+              "zero_or_more": "#/$defs/PropertyPathZeroOrMore",
+              "zero_or_one": "#/$defs/PropertyPathZeroOrOne"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/PropertyPathTerm"
+            },
+            {
+              "$ref": "#/$defs/PropertyPathInverse"
+            },
+            {
+              "$ref": "#/$defs/PropertyPathSeq"
+            },
+            {
+              "$ref": "#/$defs/PropertyPathAlt"
+            },
+            {
+              "$ref": "#/$defs/PropertyPathZeroOrMore"
+            },
+            {
+              "$ref": "#/$defs/PropertyPathOneOrMore"
+            },
+            {
+              "$ref": "#/$defs/PropertyPathZeroOrOne"
+            }
+          ],
+          "title": "Operand"
+        }
+      },
+      "required": [
+        "operand"
+      ],
+      "title": "PropertyPathZeroOrOne",
+      "type": "object"
+    },
+    "RegexExpr": {
+      "additionalProperties": false,
+      "properties": {
+        "flags": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Flags"
+        },
+        "kind": {
+          "const": "regex",
+          "default": "regex",
+          "title": "Kind",
+          "type": "string"
+        },
+        "pattern": {
+          "title": "Pattern",
+          "type": "string"
+        },
+        "text": {
+          "discriminator": {
+            "mapping": {
+              "aggregate": "#/$defs/AggregateExpr",
+              "binary": "#/$defs/BinaryExpr",
+              "bound": "#/$defs/BoundExpr",
+              "datetime": "#/$defs/DateTimeExpr",
+              "exists": "#/$defs/ExistsExpr",
+              "function": "#/$defs/FunctionExpr",
+              "in": "#/$defs/InExpr",
+              "iri": "#/$defs/Iri",
+              "lang_matches": "#/$defs/LangMatchesExpr",
+              "literal": "#/$defs/LiteralValue",
+              "not": "#/$defs/NotExpr",
+              "not_exists": "#/$defs/NotExistsExpr",
+              "prefixed_name": "#/$defs/PrefixedName",
+              "regex": "#/$defs/RegexExpr",
+              "unary": "#/$defs/UnaryExpr",
+              "var": "#/$defs/Var"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Var"
+            },
+            {
+              "$ref": "#/$defs/Iri"
+            },
+            {
+              "$ref": "#/$defs/PrefixedName"
+            },
+            {
+              "$ref": "#/$defs/LiteralValue"
+            },
+            {
+              "$ref": "#/$defs/BinaryExpr"
+            },
+            {
+              "$ref": "#/$defs/UnaryExpr"
+            },
+            {
+              "$ref": "#/$defs/NotExpr"
+            },
+            {
+              "$ref": "#/$defs/InExpr"
+            },
+            {
+              "$ref": "#/$defs/FunctionExpr"
+            },
+            {
+              "$ref": "#/$defs/RegexExpr"
+            },
+            {
+              "$ref": "#/$defs/BoundExpr"
+            },
+            {
+              "$ref": "#/$defs/LangMatchesExpr"
+            },
+            {
+              "$ref": "#/$defs/NotExistsExpr"
+            },
+            {
+              "$ref": "#/$defs/ExistsExpr"
+            },
+            {
+              "$ref": "#/$defs/AggregateExpr"
+            },
+            {
+              "$ref": "#/$defs/DateTimeExpr"
+            }
+          ],
+          "title": "Text"
+        }
+      },
+      "required": [
+        "text",
+        "pattern"
+      ],
+      "title": "RegexExpr",
+      "type": "object"
+    },
+    "SelectPlan": {
+      "additionalProperties": false,
+      "properties": {
+        "distinct": {
+          "default": false,
+          "title": "Distinct",
+          "type": "boolean"
+        },
+        "group_by": {
+          "items": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Var"
+              },
+              {
+                "discriminator": {
+                  "mapping": {
+                    "aggregate": "#/$defs/AggregateExpr",
+                    "binary": "#/$defs/BinaryExpr",
+                    "bound": "#/$defs/BoundExpr",
+                    "datetime": "#/$defs/DateTimeExpr",
+                    "exists": "#/$defs/ExistsExpr",
+                    "function": "#/$defs/FunctionExpr",
+                    "in": "#/$defs/InExpr",
+                    "iri": "#/$defs/Iri",
+                    "lang_matches": "#/$defs/LangMatchesExpr",
+                    "literal": "#/$defs/LiteralValue",
+                    "not": "#/$defs/NotExpr",
+                    "not_exists": "#/$defs/NotExistsExpr",
+                    "prefixed_name": "#/$defs/PrefixedName",
+                    "regex": "#/$defs/RegexExpr",
+                    "unary": "#/$defs/UnaryExpr",
+                    "var": "#/$defs/Var"
+                  },
+                  "propertyName": "kind"
+                },
+                "oneOf": [
+                  {
+                    "$ref": "#/$defs/Var"
+                  },
+                  {
+                    "$ref": "#/$defs/Iri"
+                  },
+                  {
+                    "$ref": "#/$defs/PrefixedName"
+                  },
+                  {
+                    "$ref": "#/$defs/LiteralValue"
+                  },
+                  {
+                    "$ref": "#/$defs/BinaryExpr"
+                  },
+                  {
+                    "$ref": "#/$defs/UnaryExpr"
+                  },
+                  {
+                    "$ref": "#/$defs/NotExpr"
+                  },
+                  {
+                    "$ref": "#/$defs/InExpr"
+                  },
+                  {
+                    "$ref": "#/$defs/FunctionExpr"
+                  },
+                  {
+                    "$ref": "#/$defs/RegexExpr"
+                  },
+                  {
+                    "$ref": "#/$defs/BoundExpr"
+                  },
+                  {
+                    "$ref": "#/$defs/LangMatchesExpr"
+                  },
+                  {
+                    "$ref": "#/$defs/NotExistsExpr"
+                  },
+                  {
+                    "$ref": "#/$defs/ExistsExpr"
+                  },
+                  {
+                    "$ref": "#/$defs/AggregateExpr"
+                  },
+                  {
+                    "$ref": "#/$defs/DateTimeExpr"
+                  }
+                ]
+              }
+            ]
+          },
+          "title": "Group By",
+          "type": "array"
+        },
+        "having": {
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "aggregate": "#/$defs/AggregateExpr",
+                "binary": "#/$defs/BinaryExpr",
+                "bound": "#/$defs/BoundExpr",
+                "datetime": "#/$defs/DateTimeExpr",
+                "exists": "#/$defs/ExistsExpr",
+                "function": "#/$defs/FunctionExpr",
+                "in": "#/$defs/InExpr",
+                "iri": "#/$defs/Iri",
+                "lang_matches": "#/$defs/LangMatchesExpr",
+                "literal": "#/$defs/LiteralValue",
+                "not": "#/$defs/NotExpr",
+                "not_exists": "#/$defs/NotExistsExpr",
+                "prefixed_name": "#/$defs/PrefixedName",
+                "regex": "#/$defs/RegexExpr",
+                "unary": "#/$defs/UnaryExpr",
+                "var": "#/$defs/Var"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/Var"
+              },
+              {
+                "$ref": "#/$defs/Iri"
+              },
+              {
+                "$ref": "#/$defs/PrefixedName"
+              },
+              {
+                "$ref": "#/$defs/LiteralValue"
+              },
+              {
+                "$ref": "#/$defs/BinaryExpr"
+              },
+              {
+                "$ref": "#/$defs/UnaryExpr"
+              },
+              {
+                "$ref": "#/$defs/NotExpr"
+              },
+              {
+                "$ref": "#/$defs/InExpr"
+              },
+              {
+                "$ref": "#/$defs/FunctionExpr"
+              },
+              {
+                "$ref": "#/$defs/RegexExpr"
+              },
+              {
+                "$ref": "#/$defs/BoundExpr"
+              },
+              {
+                "$ref": "#/$defs/LangMatchesExpr"
+              },
+              {
+                "$ref": "#/$defs/NotExistsExpr"
+              },
+              {
+                "$ref": "#/$defs/ExistsExpr"
+              },
+              {
+                "$ref": "#/$defs/AggregateExpr"
+              },
+              {
+                "$ref": "#/$defs/DateTimeExpr"
+              }
+            ]
+          },
+          "title": "Having",
+          "type": "array"
+        },
+        "kind": {
+          "const": "select",
+          "default": "select",
+          "title": "Kind",
+          "type": "string"
+        },
+        "limit": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Limit"
+        },
+        "offset": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Offset"
+        },
+        "order_by": {
+          "items": {
+            "$ref": "#/$defs/OrderClause"
+          },
+          "title": "Order By",
+          "type": "array"
+        },
+        "prefixes": {
+          "items": {
+            "$ref": "#/$defs/Prefix"
+          },
+          "title": "Prefixes",
+          "type": "array"
+        },
+        "projection": {
+          "items": {
+            "$ref": "#/$defs/Projection"
+          },
+          "title": "Projection",
+          "type": "array"
+        },
+        "reduced": {
+          "default": false,
+          "title": "Reduced",
+          "type": "boolean"
+        },
+        "where": {
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "bind": "#/$defs/BindPattern",
+                "filter": "#/$defs/FilterPattern",
+                "graph": "#/$defs/GraphPattern",
+                "group": "#/$defs/GroupPattern",
+                "minus": "#/$defs/MinusPattern",
+                "optional": "#/$defs/OptionalPattern",
+                "service": "#/$defs/ServicePattern",
+                "subquery": "#/$defs/SubqueryPattern",
+                "triple": "#/$defs/TriplePattern",
+                "union": "#/$defs/UnionPattern",
+                "values": "#/$defs/ValuesPattern"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/TriplePattern"
+              },
+              {
+                "$ref": "#/$defs/GroupPattern"
+              },
+              {
+                "$ref": "#/$defs/OptionalPattern"
+              },
+              {
+                "$ref": "#/$defs/UnionPattern"
+              },
+              {
+                "$ref": "#/$defs/MinusPattern"
+              },
+              {
+                "$ref": "#/$defs/FilterPattern"
+              },
+              {
+                "$ref": "#/$defs/BindPattern"
+              },
+              {
+                "$ref": "#/$defs/ValuesPattern"
+              },
+              {
+                "$ref": "#/$defs/GraphPattern"
+              },
+              {
+                "$ref": "#/$defs/ServicePattern"
+              },
+              {
+                "$ref": "#/$defs/SubqueryPattern"
+              }
+            ]
+          },
+          "title": "Where",
+          "type": "array"
+        }
+      },
+      "title": "SelectPlan",
+      "type": "object"
+    },
+    "ServicePattern": {
+      "additionalProperties": false,
+      "description": "``SERVICE <ep> { ... }``. Off by default; the validator gates it.",
+      "properties": {
+        "endpoint": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Iri"
+            },
+            {
+              "$ref": "#/$defs/PrefixedName"
+            }
+          ],
+          "title": "Endpoint"
+        },
+        "kind": {
+          "const": "service",
+          "default": "service",
+          "title": "Kind",
+          "type": "string"
+        },
+        "patterns": {
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "bind": "#/$defs/BindPattern",
+                "filter": "#/$defs/FilterPattern",
+                "graph": "#/$defs/GraphPattern",
+                "group": "#/$defs/GroupPattern",
+                "minus": "#/$defs/MinusPattern",
+                "optional": "#/$defs/OptionalPattern",
+                "service": "#/$defs/ServicePattern",
+                "subquery": "#/$defs/SubqueryPattern",
+                "triple": "#/$defs/TriplePattern",
+                "union": "#/$defs/UnionPattern",
+                "values": "#/$defs/ValuesPattern"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/TriplePattern"
+              },
+              {
+                "$ref": "#/$defs/GroupPattern"
+              },
+              {
+                "$ref": "#/$defs/OptionalPattern"
+              },
+              {
+                "$ref": "#/$defs/UnionPattern"
+              },
+              {
+                "$ref": "#/$defs/MinusPattern"
+              },
+              {
+                "$ref": "#/$defs/FilterPattern"
+              },
+              {
+                "$ref": "#/$defs/BindPattern"
+              },
+              {
+                "$ref": "#/$defs/ValuesPattern"
+              },
+              {
+                "$ref": "#/$defs/GraphPattern"
+              },
+              {
+                "$ref": "#/$defs/ServicePattern"
+              },
+              {
+                "$ref": "#/$defs/SubqueryPattern"
+              }
+            ]
+          },
+          "title": "Patterns",
+          "type": "array"
+        },
+        "silent": {
+          "default": false,
+          "title": "Silent",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "endpoint",
+        "patterns"
+      ],
+      "title": "ServicePattern",
+      "type": "object"
+    },
+    "SubqueryPattern": {
+      "additionalProperties": false,
+      "description": "A nested SELECT subquery in pattern position.",
+      "properties": {
+        "kind": {
+          "const": "subquery",
+          "default": "subquery",
+          "title": "Kind",
+          "type": "string"
+        },
+        "select": {
+          "$ref": "#/$defs/SelectPlan"
+        }
+      },
+      "required": [
+        "select"
+      ],
+      "title": "SubqueryPattern",
+      "type": "object"
+    },
+    "TriplePattern": {
+      "additionalProperties": false,
+      "description": "A basic triple pattern. ``predicate`` may be an IRI or a property path.\n\nSubject and object cannot be property paths; the :data:`RdfTerm`\ndiscriminated union enforces that.",
+      "properties": {
+        "kind": {
+          "const": "triple",
+          "default": "triple",
+          "title": "Kind",
+          "type": "string"
+        },
+        "object": {
+          "discriminator": {
+            "mapping": {
+              "iri": "#/$defs/Iri",
+              "literal": "#/$defs/LiteralValue",
+              "prefixed_name": "#/$defs/PrefixedName",
+              "var": "#/$defs/Var"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Var"
+            },
+            {
+              "$ref": "#/$defs/Iri"
+            },
+            {
+              "$ref": "#/$defs/PrefixedName"
+            },
+            {
+              "$ref": "#/$defs/LiteralValue"
+            }
+          ],
+          "title": "Object"
+        },
+        "predicate": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Iri"
+            },
+            {
+              "$ref": "#/$defs/PrefixedName"
+            },
+            {
+              "$ref": "#/$defs/Var"
+            },
+            {
+              "discriminator": {
+                "mapping": {
+                  "alt": "#/$defs/PropertyPathAlt",
+                  "inverse": "#/$defs/PropertyPathInverse",
+                  "one_or_more": "#/$defs/PropertyPathOneOrMore",
+                  "seq": "#/$defs/PropertyPathSeq",
+                  "term": "#/$defs/PropertyPathTerm",
+                  "zero_or_more": "#/$defs/PropertyPathZeroOrMore",
+                  "zero_or_one": "#/$defs/PropertyPathZeroOrOne"
+                },
+                "propertyName": "kind"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/PropertyPathTerm"
+                },
+                {
+                  "$ref": "#/$defs/PropertyPathInverse"
+                },
+                {
+                  "$ref": "#/$defs/PropertyPathSeq"
+                },
+                {
+                  "$ref": "#/$defs/PropertyPathAlt"
+                },
+                {
+                  "$ref": "#/$defs/PropertyPathZeroOrMore"
+                },
+                {
+                  "$ref": "#/$defs/PropertyPathOneOrMore"
+                },
+                {
+                  "$ref": "#/$defs/PropertyPathZeroOrOne"
+                }
+              ]
+            }
+          ],
+          "title": "Predicate"
+        },
+        "subject": {
+          "discriminator": {
+            "mapping": {
+              "iri": "#/$defs/Iri",
+              "literal": "#/$defs/LiteralValue",
+              "prefixed_name": "#/$defs/PrefixedName",
+              "var": "#/$defs/Var"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Var"
+            },
+            {
+              "$ref": "#/$defs/Iri"
+            },
+            {
+              "$ref": "#/$defs/PrefixedName"
+            },
+            {
+              "$ref": "#/$defs/LiteralValue"
+            }
+          ],
+          "title": "Subject"
+        }
+      },
+      "required": [
+        "subject",
+        "predicate",
+        "object"
+      ],
+      "title": "TriplePattern",
+      "type": "object"
+    },
+    "UnaryExpr": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "unary",
+          "default": "unary",
+          "title": "Kind",
+          "type": "string"
+        },
+        "op": {
+          "title": "Op",
+          "type": "string"
+        },
+        "operand": {
+          "discriminator": {
+            "mapping": {
+              "aggregate": "#/$defs/AggregateExpr",
+              "binary": "#/$defs/BinaryExpr",
+              "bound": "#/$defs/BoundExpr",
+              "datetime": "#/$defs/DateTimeExpr",
+              "exists": "#/$defs/ExistsExpr",
+              "function": "#/$defs/FunctionExpr",
+              "in": "#/$defs/InExpr",
+              "iri": "#/$defs/Iri",
+              "lang_matches": "#/$defs/LangMatchesExpr",
+              "literal": "#/$defs/LiteralValue",
+              "not": "#/$defs/NotExpr",
+              "not_exists": "#/$defs/NotExistsExpr",
+              "prefixed_name": "#/$defs/PrefixedName",
+              "regex": "#/$defs/RegexExpr",
+              "unary": "#/$defs/UnaryExpr",
+              "var": "#/$defs/Var"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Var"
+            },
+            {
+              "$ref": "#/$defs/Iri"
+            },
+            {
+              "$ref": "#/$defs/PrefixedName"
+            },
+            {
+              "$ref": "#/$defs/LiteralValue"
+            },
+            {
+              "$ref": "#/$defs/BinaryExpr"
+            },
+            {
+              "$ref": "#/$defs/UnaryExpr"
+            },
+            {
+              "$ref": "#/$defs/NotExpr"
+            },
+            {
+              "$ref": "#/$defs/InExpr"
+            },
+            {
+              "$ref": "#/$defs/FunctionExpr"
+            },
+            {
+              "$ref": "#/$defs/RegexExpr"
+            },
+            {
+              "$ref": "#/$defs/BoundExpr"
+            },
+            {
+              "$ref": "#/$defs/LangMatchesExpr"
+            },
+            {
+              "$ref": "#/$defs/NotExistsExpr"
+            },
+            {
+              "$ref": "#/$defs/ExistsExpr"
+            },
+            {
+              "$ref": "#/$defs/AggregateExpr"
+            },
+            {
+              "$ref": "#/$defs/DateTimeExpr"
+            }
+          ],
+          "title": "Operand"
+        }
+      },
+      "required": [
+        "op",
+        "operand"
+      ],
+      "title": "UnaryExpr",
+      "type": "object"
+    },
+    "UnionPattern": {
+      "additionalProperties": false,
+      "properties": {
+        "branches": {
+          "items": {
+            "items": {
+              "discriminator": {
+                "mapping": {
+                  "bind": "#/$defs/BindPattern",
+                  "filter": "#/$defs/FilterPattern",
+                  "graph": "#/$defs/GraphPattern",
+                  "group": "#/$defs/GroupPattern",
+                  "minus": "#/$defs/MinusPattern",
+                  "optional": "#/$defs/OptionalPattern",
+                  "service": "#/$defs/ServicePattern",
+                  "subquery": "#/$defs/SubqueryPattern",
+                  "triple": "#/$defs/TriplePattern",
+                  "union": "#/$defs/UnionPattern",
+                  "values": "#/$defs/ValuesPattern"
+                },
+                "propertyName": "kind"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/TriplePattern"
+                },
+                {
+                  "$ref": "#/$defs/GroupPattern"
+                },
+                {
+                  "$ref": "#/$defs/OptionalPattern"
+                },
+                {
+                  "$ref": "#/$defs/UnionPattern"
+                },
+                {
+                  "$ref": "#/$defs/MinusPattern"
+                },
+                {
+                  "$ref": "#/$defs/FilterPattern"
+                },
+                {
+                  "$ref": "#/$defs/BindPattern"
+                },
+                {
+                  "$ref": "#/$defs/ValuesPattern"
+                },
+                {
+                  "$ref": "#/$defs/GraphPattern"
+                },
+                {
+                  "$ref": "#/$defs/ServicePattern"
+                },
+                {
+                  "$ref": "#/$defs/SubqueryPattern"
+                }
+              ]
+            },
+            "type": "array"
+          },
+          "title": "Branches",
+          "type": "array"
+        },
+        "kind": {
+          "const": "union",
+          "default": "union",
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "branches"
+      ],
+      "title": "UnionPattern",
+      "type": "object"
+    },
+    "ValuesPattern": {
+      "additionalProperties": false,
+      "description": "Inline values: ``VALUES (?a ?b) { (1 2) (3 4) }``.",
+      "properties": {
+        "kind": {
+          "const": "values",
+          "default": "values",
+          "title": "Kind",
+          "type": "string"
+        },
+        "rows": {
+          "items": {
+            "items": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Iri"
+                },
+                {
+                  "$ref": "#/$defs/PrefixedName"
+                },
+                {
+                  "$ref": "#/$defs/LiteralValue"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": "array"
+          },
+          "title": "Rows",
+          "type": "array"
+        },
+        "variables": {
+          "items": {
+            "$ref": "#/$defs/Var"
+          },
+          "title": "Variables",
+          "type": "array"
+        }
+      },
+      "required": [
+        "variables",
+        "rows"
+      ],
+      "title": "ValuesPattern",
+      "type": "object"
+    },
+    "Var": {
+      "additionalProperties": false,
+      "description": "A SPARQL variable. Rendered as ``?name``.",
+      "properties": {
+        "kind": {
+          "const": "var",
+          "default": "var",
+          "title": "Kind",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "Var",
+      "type": "object"
+    }
+  },
+  "discriminator": {
+    "mapping": {
+      "ask": "#/$defs/AskPlan",
+      "construct": "#/$defs/ConstructPlan",
+      "select": "#/$defs/SelectPlan"
+    },
+    "propertyName": "kind"
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/SelectPlan"
+    },
+    {
+      "$ref": "#/$defs/AskPlan"
+    },
+    {
+      "$ref": "#/$defs/ConstructPlan"
+    }
+  ]
+}

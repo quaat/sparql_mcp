@@ -66,6 +66,12 @@ jobs:
       - name: Eval (adversarial)
         run: python -m evals.runner --cases evals/golden_cases_adversarial.yaml --planner deterministic
 
+      - name: Docs reference fragments are fresh
+        run: python scripts/generate_docs_reference.py --check
+
+      - name: Docs cover every config var / tool / resource
+        run: python scripts/check_docs.py
+
   hash-seed-stress:
     name: import stress (hash seeds)
     runs-on: ubuntu-latest

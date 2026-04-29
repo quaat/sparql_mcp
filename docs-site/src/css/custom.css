@@ -1,0 +1,35 @@
+/* graph-mcp documentation site theme — slate-and-amber, fits the
+   "deterministic, validated, production-oriented" tone of the project. */
+
+:root {
+  --ifm-color-primary: #2c5d8f;
+  --ifm-color-primary-dark: #285580;
+  --ifm-color-primary-darker: #244e75;
+  --ifm-color-primary-darkest: #1d4060;
+  --ifm-color-primary-light: #3d7ab2;
+  --ifm-color-primary-lighter: #4d86ba;
+  --ifm-color-primary-lightest: #75a3cb;
+  --ifm-code-font-size: 95%;
+  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.08);
+}
+
+[data-theme="dark"] {
+  --ifm-color-primary: #6fa8dc;
+  --ifm-color-primary-dark: #4f93d0;
+  --ifm-color-primary-darker: #3b85ca;
+  --ifm-color-primary-darkest: #266aab;
+  --ifm-color-primary-light: #8fbde2;
+  --ifm-color-primary-lighter: #9fc6e6;
+  --ifm-color-primary-lightest: #c2d9ee;
+  --docusaurus-highlighted-code-line-bg: rgba(255, 255, 255, 0.1);
+}
+
+/* Slightly tighter monospace blocks for dense reference docs. */
+.markdown pre {
+  line-height: 1.45;
+}
+
+/* Make admonitions a touch more compact. */
+.theme-admonition {
+  margin-bottom: 1rem;
+}
