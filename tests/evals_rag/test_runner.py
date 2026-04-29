@@ -44,11 +44,16 @@ def test_runner_writes_metrics_and_report(tmp_path):
     assert json_path.exists()
     metrics = json.loads(metrics_path.read_text())
     assert "case_pass_rate" in metrics
+    assert "selected_concept_recall" in metrics
+    assert "retrieval_concept_recall_at_8" in metrics
+    # Deprecated aliases still present for back-compat.
     assert "selected_concept_accuracy" in metrics
     assert "retrieval_recall_at_8" in metrics
     text = report_path.read_text()
     assert "RAG Evaluation Report" in text
-    assert "Retrieved ontology candidates" not in text  # belongs in prompt, not report
+    # The report now embeds the candidate-pack text per case so the operator
+    # can see what the LLM actually saw.
+    assert "candidate pack injected into prompt" in text
     payload = json.loads(json_path.read_text())
     assert payload["metrics"] == metrics
     assert payload["cases"], "expected at least one case in report.json"

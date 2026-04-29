@@ -3,18 +3,17 @@
 The base eval metrics (:mod:`evals.metrics`) are reused unchanged and
 merged into the RAG report so the same case-pass-rate / valid-plan-rate
 language is comparable across runs. This module adds retrieval-side
-metrics:
+metrics with two granularities:
 
-- ``retrieval_recall_at_k`` — fraction of cases where every expected term
-  IRI was returned within the retrieved set.
-- ``selected_concept_accuracy`` — fraction of cases where every expected
-  term IRI ended up in the *selected* (post-rerank, top-N) set.
-- ``reranker_improvement_rate`` — fraction of cases where re-ranking
-  promoted at least one expected concept that was not in the top-N before.
-- ``unresolved_mention_rate`` / ``concept_ambiguity_rate`` — how often the
-  retriever / reranker fail open or hand the planner ambiguous candidates.
-- ``planner_case_pass_delta_vs_baseline`` — overall pass-rate delta
-  against an optional baseline metrics file from the non-RAG runner.
+- *concept-level* metrics divide expected-IRI counts: useful when cases
+  carry multiple expected IRIs.
+- *case-level* metrics ask "did this case pass?" — i.e. were all expected
+  IRIs present.
+
+Old keys (``retrieval_recall_at_k``, ``selected_concept_accuracy``,
+``reranker_improvement_rate``) are retained as aliases for backwards
+compatibility but are deprecated; new code should use the strengthened
+keys (``retrieval_concept_recall_at_k`` etc.).
 """
 
 from __future__ import annotations
@@ -29,11 +28,7 @@ from evals_rag.models import RagPlannerDiagnostics
 
 @dataclass
 class RagCaseResult:
-    """Pairing of a case result with its RAG-specific diagnostics.
-
-    The runner builds these so the metrics layer doesn't have to dig into
-    ``CaseResult.generated_plan_json`` for retrieval data.
-    """
+    """Pairing of a case result with its RAG-specific diagnostics."""
 
     case: GoldenCase
     result: CaseResult
@@ -46,81 +41,110 @@ def compute_rag_metrics(
     baseline_metrics: dict[str, float] | None = None,
     k: int = 8,
 ) -> dict[str, float]:
-    """Combine base eval metrics with RAG-specific aggregates.
-
-    ``baseline_metrics`` is the metrics dict from a non-RAG run loaded by
-    the runner via ``--baseline-report``. When supplied, this function adds
-    ``*_delta_vs_baseline`` keys for the metrics where comparison is
-    meaningful. Missing baseline keys are silently ignored.
-    """
+    """Combine base eval metrics with RAG-specific aggregates."""
     rag_results = list(rag_results)
     base = compute_metrics([r.result for r in rag_results])
 
     expected_iris_total = 0
-    expected_iris_recalled = 0
-    expected_iris_selected = 0
-    rerank_promoted = 0
-    rerank_eligible = 0
+    expected_iris_recalled_topk = 0
+    expected_iris_in_selected = 0
+    expected_iris_in_retrieved = 0
+    cases_with_full_topk_recall = 0
+    cases_with_full_selected_recall = 0
     cases_with_unresolved = 0
     cases_with_ambiguity = 0
+    cases_with_empty_selection = 0
+    cases_with_retrieval_errors = 0
+    rerank_eligible = 0
+    rerank_promoted = 0
+    rerank_demoted = 0
+    selected_total = 0
+    selected_correct = 0
+    retrieved_count_sum = 0
+    selected_count_sum = 0
+    cases_with_expected = 0
 
     for entry in rag_results:
-        expected = _expected_concept_iris(entry.case)
-        if not expected:
-            continue
-        # Normalize both sides through the same prefix-expansion step so a
-        # case spec saying ``ex:worksFor`` matches a retrieved concept whose
-        # IRI is ``http://example.org/worksFor``.
-        retrieved = {_expand(rc.concept.iri) for rc in entry.rag_diagnostics.retrieved_concepts}
-        retrieved |= {
-            _expand(rc.concept.prefixed_name)
-            for rc in entry.rag_diagnostics.retrieved_concepts
-            if rc.concept.prefixed_name
-        }
-        selected = {_expand(rc.concept.iri) for rc in entry.rag_diagnostics.selected_concepts}
-        selected |= {
-            _expand(rc.concept.prefixed_name)
-            for rc in entry.rag_diagnostics.selected_concepts
-            if rc.concept.prefixed_name
-        }
-        expected = {_expand(e) for e in expected}
-        # Top-K retrieval before rerank: the first K hits per retrieval.
-        topk_retrieved = _topk_iris(entry.rag_diagnostics.retrieved_concepts, k)
-        topk_reranked = _topk_iris(entry.rag_diagnostics.reranked_concepts, k)
-
-        for iri in expected:
-            expected_iris_total += 1
-            if iri in retrieved:
-                expected_iris_recalled += 1
-            if iri in selected:
-                expected_iris_selected += 1
-
-        promoted = (expected & topk_reranked) - (expected & topk_retrieved)
-        if expected & topk_retrieved or expected & topk_reranked:
-            rerank_eligible += 1
-        if promoted:
-            rerank_promoted += 1
-
-        if entry.rag_diagnostics.unresolved_mentions:
+        diag = entry.rag_diagnostics
+        retrieved_count_sum += len(diag.retrieved_concepts)
+        selected_count_sum += len(diag.selected_concepts)
+        if diag.unresolved_mentions:
             cases_with_unresolved += 1
-        if _has_ambiguous_selection(entry.rag_diagnostics):
+        if _has_ambiguous_selection(diag):
             cases_with_ambiguity += 1
+        if not diag.selected_concepts and diag.retrieved_concepts:
+            cases_with_empty_selection += 1
+        if diag.retrieval_errors:
+            cases_with_retrieval_errors += 1
+
+        expected = _expected_iris_normalized(entry.case)
+        retrieved_iris = _iri_set(diag.retrieved_concepts)
+        topk_retrieved = _topk_iris(diag.retrieved_concepts, k)
+        topk_reranked = _topk_iris(diag.reranked_concepts, k)
+        selected_iris = _iri_set(diag.selected_concepts)
+
+        # Selection precision applies even when the case has no expected
+        # IRIs: any selected concept counts toward the denominator, but
+        # the numerator is "selected ∧ in expected".
+        selected_total += len(selected_iris)
+        if expected:
+            cases_with_expected += 1
+            selected_correct += len(selected_iris & expected)
+            for iri in expected:
+                expected_iris_total += 1
+                if iri in retrieved_iris:
+                    expected_iris_in_retrieved += 1
+                if iri in topk_retrieved:
+                    expected_iris_recalled_topk += 1
+                if iri in selected_iris:
+                    expected_iris_in_selected += 1
+            if expected.issubset(topk_retrieved):
+                cases_with_full_topk_recall += 1
+            if expected.issubset(selected_iris):
+                cases_with_full_selected_recall += 1
+            promoted = (expected & topk_reranked) - (expected & topk_retrieved)
+            demoted = (expected & topk_retrieved) - (expected & topk_reranked)
+            if expected & topk_retrieved or expected & topk_reranked:
+                rerank_eligible += 1
+            if promoted:
+                rerank_promoted += 1
+            if demoted:
+                rerank_demoted += 1
 
     n_cases = max(1, len(rag_results))
-    rag_metrics = {
-        f"retrieval_recall_at_{k}": (
-            (expected_iris_recalled / expected_iris_total) if expected_iris_total else 1.0
+    n_with_expected = max(1, cases_with_expected)
+    rag_metrics: dict[str, float] = {
+        f"retrieval_concept_recall_at_{k}": (
+            (expected_iris_recalled_topk / expected_iris_total) if expected_iris_total else 1.0
         ),
-        "selected_concept_accuracy": (
-            (expected_iris_selected / expected_iris_total) if expected_iris_total else 1.0
+        f"retrieval_case_recall_at_{k}": (
+            cases_with_full_topk_recall / n_with_expected if cases_with_expected else 1.0
         ),
-        "reranker_improvement_rate": (
-            (rerank_promoted / rerank_eligible) if rerank_eligible else 0.0
+        "selected_concept_recall": (
+            (expected_iris_in_selected / expected_iris_total) if expected_iris_total else 1.0
         ),
+        "selected_case_recall": (
+            cases_with_full_selected_recall / n_with_expected if cases_with_expected else 1.0
+        ),
+        "selected_precision": ((selected_correct / selected_total) if selected_total else 1.0),
+        "mean_selected_candidates": selected_count_sum / n_cases,
+        "mean_retrieved_candidates": retrieved_count_sum / n_cases,
         "unresolved_mention_rate": cases_with_unresolved / n_cases,
         "concept_ambiguity_rate": cases_with_ambiguity / n_cases,
+        "empty_selection_rate": cases_with_empty_selection / n_cases,
+        "retrieval_error_rate": cases_with_retrieval_errors / n_cases,
+        "reranker_promotion_rate": (
+            (rerank_promoted / rerank_eligible) if rerank_eligible else 0.0
+        ),
+        "reranker_demotion_error_rate": (
+            (rerank_demoted / rerank_eligible) if rerank_eligible else 0.0
+        ),
         "planner_case_pass_rate": base.get("case_pass_rate", 0.0),
     }
+    # Deprecated aliases — kept so existing dashboards don't break.
+    rag_metrics[f"retrieval_recall_at_{k}"] = rag_metrics[f"retrieval_concept_recall_at_{k}"]
+    rag_metrics["selected_concept_accuracy"] = rag_metrics["selected_concept_recall"]
+    rag_metrics["reranker_improvement_rate"] = rag_metrics["reranker_promotion_rate"]
     base.update(rag_metrics)
 
     if baseline_metrics:
@@ -152,14 +176,8 @@ def _baseline_deltas(current: dict[str, float], baseline: dict[str, float]) -> d
     return out
 
 
-def _expected_concept_iris(case: GoldenCase) -> set[str]:
-    """Approximate the set of ontology IRIs a case is expected to use.
-
-    Falls back to the legacy ``required_terms`` list (prefixed names like
-    ``ex:worksFor``) when no IR-level requirement is specified, since that
-    is what the existing golden cases populate. Variables (``?_``) are
-    skipped — they are not concept IRIs.
-    """
+def _expected_iris_normalized(case: GoldenCase) -> set[str]:
+    """Return the expected concept IRI set for a case, prefix-expanded."""
     iris: set[str] = set()
     for term in case.expected.required_terms:
         if term.startswith(("?", "$")) or term.startswith(("LANG", "DATATYPE")):
@@ -176,15 +194,20 @@ def _expected_concept_iris(case: GoldenCase) -> set[str]:
             if slot.startswith("?_") or slot.startswith(("?", "$")):
                 continue
             iris.add(slot)
-    return iris
+    return {_expand(i) for i in iris}
+
+
+def _iri_set(items: list) -> set[str]:
+    out: set[str] = set()
+    for item in items:
+        out.add(_expand(item.concept.iri))
+        if item.concept.prefixed_name:
+            out.add(_expand(item.concept.prefixed_name))
+    return out
 
 
 def _topk_iris(items: list, k: int) -> set[str]:
-    """Return the IRI set of the first ``k`` items (retrieved or reranked).
-
-    Expands prefixed names so the set is directly comparable with the
-    expected IRI set produced by :func:`_expected_concept_iris`.
-    """
+    """Return the IRI set of the first ``k`` items (retrieved or reranked)."""
     out: set[str] = set()
     for item in items[:k]:
         out.add(_expand(item.concept.iri))

@@ -112,6 +112,23 @@ class ConceptCandidatePack(BaseModel):
     diagnostics: list[str] = Field(default_factory=list)
 
 
+class RagMentionDiagnostic(BaseModel):
+    """Per-mention diagnostic captured during the RAG cycle.
+
+    Preserves the originating :class:`evals.mention_extractor.TermMention`
+    fields the planner looks at (text, expected kinds, source heuristics,
+    char span) so the report can show *why* a mention was retrieved with a
+    given kind hint.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    text: str
+    expected_kinds: list[ConceptKind] = Field(default_factory=list)
+    sources: list[str] = Field(default_factory=list)
+    span: tuple[int, int] | None = None
+
+
 class RagPlannerDiagnostics(BaseModel):
     """Per-question diagnostics emitted by the RAG planner workflow.
 
@@ -123,11 +140,19 @@ class RagPlannerDiagnostics(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     mentions: list[str] = Field(default_factory=list)
+    mention_diagnostics: list[RagMentionDiagnostic] = Field(default_factory=list)
     retrieval_queries: list[RetrievalQuery] = Field(default_factory=list)
     retrieved_concepts: list[RetrievedConcept] = Field(default_factory=list)
     reranked_concepts: list[RerankedConcept] = Field(default_factory=list)
     selected_concepts: list[RerankedConcept] = Field(default_factory=list)
     unresolved_mentions: list[str] = Field(default_factory=list)
+    retrieval_errors: list[str] = Field(default_factory=list)
+    """Structured error strings from any retrieval failures (Qdrant
+    network errors, missing embedding provider, etc.)."""
+
+    promoted_term_iris: list[str] = Field(default_factory=list)
+    """IRIs the RAG cycle promoted into the planner's resolved-term block."""
+
     planner_diagnostics: dict[str, Any] = Field(default_factory=dict)
     """Serialized :class:`evals.agent.PlannerDiagnostics` for cross-checks."""
 

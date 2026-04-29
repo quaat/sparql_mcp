@@ -2,8 +2,9 @@
 
 The retrieved-candidate-pack section is appended to the existing planner
 system prompt. The base contract (no raw SPARQL, strict ``QueryPlan`` IR,
-clarification / refusal variants) lives in :data:`evals.planner_prompt.PLANNER_SYSTEM_PROMPT`
-and is reused unchanged — this module only adds RAG-specific guidance.
+clarification / refusal variants) lives in
+:data:`evals.planner_prompt.PLANNER_SYSTEM_PROMPT` and is reused unchanged
+— this module only adds RAG-specific guidance.
 """
 
 from __future__ import annotations
@@ -17,25 +18,37 @@ from evals_rag.models import (
 RAG_GUIDANCE: str = """\
 # RAG candidate-use rules
 
-The user message ends with a "Retrieved ontology candidates" block. Those
-entries come from a vector retrieval over the schema vocabulary, optionally
-re-ranked. They are *candidates*, not facts:
+The user message contains two complementary blocks:
 
-- Use only concepts that appear in the **selected** list. Treat the broader
-  retrieval list as background context, not as resolved terms.
-- Prefer candidates with high ``final_score`` and a matching ``kind`` for
-  the role you are filling (a "property" mention should pick a property,
-  not an individual that happens to share a label).
-- Use the ``domain`` and ``range`` hints when wiring relationships: the
-  property ``ex:worksFor`` with domain ``ex:Person`` and range ``ex:Company``
-  makes the subject and object types explicit.
-- Never invent IRIs, prefixes, or local names that do not appear in the
-  candidate pack or the schema block.
-- If the selected candidates are insufficient to answer the question (no
-  matching property, missing class, etc.), return ``ClarificationOutput``
-  with a concrete clarification question. Do not guess.
-- For unsafe / destructive requests, return ``RefusedOutput`` as before;
-  retrieval results never override the policy.
+1. **Resolved terms** — produced by the deterministic resolver and (when
+   applicable) supplemented by RAG-promoted candidates. This block is
+   *authoritative*: the IRIs and prefixed names listed here are the ones
+   you must use when planning.
+2. **Retrieved ontology candidates** — the raw retrieve-then-rerank
+   output. This block exists to explain *why* a concept was promoted into
+   the resolved-terms block, and to surface high-scoring candidates that
+   were considered but not promoted.
+
+Rules:
+
+- Treat the **Resolved terms** block as the source of truth. RAG-promoted
+  entries in that block are exactly as trustworthy as deterministic ones.
+- The **Retrieved ontology candidates** block is reference material only.
+  Do not introduce IRIs from there unless the entry has been promoted to
+  the resolved-terms block, or unless the prompt explicitly states the
+  selected candidate is high-confidence.
+- When a retrieved candidate conflicts with a resolved term (different
+  IRI for the same mention), prefer the resolved term unless the
+  conflict is marked as "RAG-promoted, high-confidence".
+- Do not use low-scoring (or unselected) retrieved concepts to invent
+  triples or property paths.
+- Use ``domain`` and ``range`` hints when wiring relationships: a
+  property with domain ``ex:Person`` and range ``ex:Company`` makes the
+  subject and object types explicit.
+- If even after RAG promotion a required mention remains unresolved or
+  ambiguous, return :class:`ClarificationOutput`. Do not guess.
+- Destructive / unsafe requests still go to :class:`RefusedOutput` —
+  retrieval results never override policy.
 """
 
 
@@ -44,9 +57,9 @@ def render_candidate_pack(pack: ConceptCandidatePack) -> str:
 
     The output is grouped per mention when the planner ran retrievals at
     mention granularity (the common case); a single full-question retrieval
-    is rendered under a sentinel ``"<question>"`` heading. The format is
-    intentionally line-oriented so the LLM can scan it quickly without
-    being overwhelmed by Qdrant payload metadata.
+    is rendered under a sentinel ``"<question>"`` heading. Concepts that
+    were retrieved against multiple mentions show all originating mentions
+    in their lineage line.
     """
     if not pack.selected and not pack.retrieved:
         return "(no ontology candidates retrieved)"
@@ -76,19 +89,11 @@ def render_candidate_pack(pack: ConceptCandidatePack) -> str:
 
 
 def _group_by_mention(pack: ConceptCandidatePack) -> dict[str, list[RerankedConcept]]:
-    """Bucket selected concepts by the mention they were retrieved for.
-
-    The mapping uses the order of ``pack.mentions`` so the planner sees
-    mentions in the same order they appear in the question. When the
-    planner ran a single full-question retrieval, the bucket key is
-    ``"<question>"``.
-    """
+    """Bucket selected concepts by the mention they were retrieved for."""
     if not pack.mentions:
         return {"<question>": list(pack.selected)}
     grouped: dict[str, list[RerankedConcept]] = {m: [] for m in pack.mentions}
     leftover: list[RerankedConcept] = []
-    # The planner stores retrieval-mention lineage in concept.metadata when
-    # available. Fall back to the first mention bucket otherwise.
     for item in pack.selected:
         bucket = item.concept.metadata.get("rag_mention") if item.concept.metadata else None
         if isinstance(bucket, str) and bucket in grouped:
@@ -110,6 +115,9 @@ def _format_candidate_line(item: RerankedConcept) -> str:
         f"score={item.final_score:.2f}",
         f"label={label!r}",
     ]
+    mentions = item.concept.metadata.get("rag_mentions")
+    if isinstance(mentions, list) and len(mentions) > 1:
+        parts.append("mentions=" + ",".join(str(m) for m in mentions))
     if item.concept.domain:
         parts.append(f"domain={_compact_iris(item.concept.domain)}")
     if item.concept.range:

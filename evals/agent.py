@@ -666,6 +666,17 @@ class PlannerDiagnostics:
     validation_errors_seen: list[ValidationIssue] = field(default_factory=list)
     final_validation_ok: bool = False
     rendered_sparql: str | None = None
+    baseline_selected_terms: list[TermCandidate] = field(default_factory=list)
+    """Terms selected by the deterministic resolver alone, before any
+    supplemental (e.g. RAG) candidates are merged in. ``selected_terms``
+    is the merged set the planner actually sees."""
+
+    rag_selected_terms: list[TermCandidate] = field(default_factory=list)
+    """Terms promoted from a supplemental source (typically the RAG
+    retriever) into ``selected_terms``. May overlap with
+    ``baseline_selected_terms`` when the same IRI was resolved both ways
+    — the entry kept in ``selected_terms`` is the deterministic one, but
+    the RAG lineage is preserved here so reports can show it."""
 
     def model_dump(self) -> dict[str, Any]:
         return {
@@ -680,6 +691,8 @@ class PlannerDiagnostics:
             "validation_errors_seen": [e.model_dump() for e in self.validation_errors_seen],
             "final_validation_ok": self.final_validation_ok,
             "rendered_sparql": self.rendered_sparql,
+            "baseline_selected_terms": [t.model_dump() for t in self.baseline_selected_terms],
+            "rag_selected_terms": [t.model_dump() for t in self.rag_selected_terms],
         }
 
 
@@ -801,12 +814,58 @@ def _format_resolved_terms_block(
     return "\n".join(lines)
 
 
+def _merge_supplemental_candidates(
+    baseline_selected: list[TermCandidate],
+    baseline_unresolved: list[str],
+    baseline_ambiguous: list[str],
+    supplemental: list[TermCandidate],
+) -> tuple[list[TermCandidate], list[TermCandidate], list[str]]:
+    """Merge supplemental candidates into the deterministic resolved set.
+
+    Returns ``(merged_selected, promoted, remaining_unresolved)``.
+
+    - ``merged_selected`` is the new authoritative selected list. Baseline
+      entries always come first; new IRIs from ``supplemental`` are
+      appended in input order.
+    - ``promoted`` is the list of supplemental entries kept for lineage —
+      including entries whose IRI already existed in the baseline (the
+      report can show "RAG agreed with baseline on X").
+    - ``remaining_unresolved`` is the baseline unresolved list minus any
+      mention whose text was satisfied by a supplemental candidate.
+    """
+    if not supplemental:
+        return list(baseline_selected), [], list(baseline_unresolved)
+    by_iri = {c.iri: c for c in baseline_selected if c.iri}
+    ambiguous_set = {a.lower() for a in baseline_ambiguous}
+    merged = list(baseline_selected)
+    promoted: list[TermCandidate] = []
+    resolved_mentions: set[str] = set()
+    for cand in supplemental:
+        if not cand.iri:
+            continue
+        if cand.mention and cand.mention.lower() in ambiguous_set:
+            # Ambiguous mention: do not let RAG break the tie silently.
+            continue
+        if cand.iri in by_iri:
+            promoted.append(cand)
+            continue
+        merged.append(cand)
+        promoted.append(cand)
+        by_iri[cand.iri] = cand
+        if cand.mention:
+            resolved_mentions.add(cand.mention.lower())
+    remaining_unresolved = [m for m in baseline_unresolved if m.lower() not in resolved_mentions]
+    return merged, promoted, remaining_unresolved
+
+
 def run_planner_workflow(
     deps: PlannerDeps,
     question: str,
     *,
     generate: Callable[[str], PlannerOutput],
     diagnostics: PlannerDiagnostics | None = None,
+    supplemental_candidates: list[TermCandidate] | None = None,
+    supplemental_block: str | None = None,
 ) -> tuple[PlannerOutput, PlannerDiagnostics]:
     """Run extract → resolve → generate → validate → repair and return the final output.
 
@@ -814,11 +873,24 @@ def run_planner_workflow(
 
     1. Extract candidate mentions from the question.
     2. Resolve each mention via the deterministic :class:`TermResolver`.
-    3. Build a prompt that includes the resolved candidate table.
-    4. Call ``generate`` to get a :class:`PlannerOutput`.
-    5. Short-circuit on ``ClarificationOutput`` / ``RefusedOutput``.
-    6. Validate the planned QueryPlan; if valid, render and return.
-    7. Otherwise, run up to ``deps.max_repair_attempts`` repair iterations:
+    3. Optionally merge ``supplemental_candidates`` into the selected term
+       set (used by the RAG planner to promote retrieval hits into the
+       authoritative resolved-term block). Merge rules:
+
+       - Each candidate must already have a non-empty IRI; no-op otherwise.
+       - If a candidate's IRI matches an existing baseline-selected term,
+         the baseline entry wins and the supplemental entry is recorded in
+         ``diagnostics.rag_selected_terms`` for lineage only.
+       - If a candidate's IRI is new, it is appended to ``selected_terms``
+         and the originating mention is removed from ``unresolved_mentions``.
+       - Supplemental candidates do not overwrite an ``ambiguous`` mention;
+         the ambiguity stays so the planner can ask for clarification.
+    4. Build a prompt that includes the merged resolved candidate table
+       (and optionally the supplemental ``supplemental_block`` for context).
+    5. Call ``generate`` to get a :class:`PlannerOutput`.
+    6. Short-circuit on ``ClarificationOutput`` / ``RefusedOutput``.
+    7. Validate the planned QueryPlan; if valid, render and return.
+    8. Otherwise, run up to ``deps.max_repair_attempts`` repair iterations:
        feed the validator's structured errors back to the agent and ask
        for a corrected plan. Each repair attempt counts toward
        ``diagnostics.repair_attempts``.
@@ -828,9 +900,22 @@ def run_planner_workflow(
     extracted, results, selected, unresolved, ambiguous = _resolve_question_terms(deps, question)
     diag.extracted_mentions = extracted
     diag.term_resolution_results = results
-    diag.selected_terms = selected
+    diag.baseline_selected_terms = list(selected)
     diag.unresolved_mentions = unresolved
     diag.ambiguous_mentions = ambiguous
+
+    if supplemental_candidates:
+        merged, promoted, remaining_unresolved = _merge_supplemental_candidates(
+            selected,
+            unresolved,
+            ambiguous,
+            supplemental_candidates,
+        )
+        selected = merged
+        unresolved = remaining_unresolved
+        diag.unresolved_mentions = remaining_unresolved
+        diag.rag_selected_terms = promoted
+    diag.selected_terms = selected
 
     snapshot = deps.schema.snapshot()
     hints = infer_relation_hints(question, selected, snapshot)
@@ -838,9 +923,14 @@ def run_planner_workflow(
 
     resolved_block = _format_resolved_terms_block(selected, unresolved, ambiguous)
     hints_block = format_hints_block(hints)
-    prompt_text = (
-        f"{question}\n\n## Resolved terms\n{resolved_block}\n\n## Relation hints\n{hints_block}"
-    )
+    prompt_sections = [
+        f"{question}",
+        f"## Resolved terms\n{resolved_block}",
+        f"## Relation hints\n{hints_block}",
+    ]
+    if supplemental_block:
+        prompt_sections.append(supplemental_block)
+    prompt_text = "\n\n".join(prompt_sections)
 
     output = generate(prompt_text)
 

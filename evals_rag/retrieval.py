@@ -52,6 +52,15 @@ class RetrievalError(RuntimeError):
     """
 
 
+class MissingEmbeddingProviderError(RetrievalError):
+    """Raised when a retriever is configured without an embedding provider.
+
+    A subclass of :class:`RetrievalError` so the planner's ``_safe_retrieve``
+    can record it as a retrieval diagnostic instead of letting it crash
+    the run.
+    """
+
+
 # --- Embedding provider ----------------------------------------------------
 
 
@@ -71,12 +80,14 @@ class MissingEmbeddingProvider:
     """Sentinel embedding provider that always fails.
 
     The Qdrant retriever defaults to this when no provider is supplied.
-    Calling :meth:`embed_query` raises ``RuntimeError`` with a message that
-    points the operator at the unimplemented vectorizer step.
+    Calling :meth:`embed_query` raises
+    :class:`MissingEmbeddingProviderError` (a subclass of
+    :class:`RetrievalError`) so the runner can record the failure as a
+    retrieval diagnostic rather than confusing it with a planner crash.
     """
 
     async def embed_query(self, text: str) -> list[float]:
-        raise RuntimeError(
+        raise MissingEmbeddingProviderError(
             "Qdrant retrieval requires an EmbeddingProvider. The ontology "
             "vectorizer is not implemented yet."
         )
@@ -292,9 +303,9 @@ class QdrantOntologyRetriever:
             return []
         try:
             vector = await self.embedding_provider.embed_query(text)
-        except RuntimeError:
+        except RetrievalError:
             raise
-        except Exception as exc:  # pragma: no cover - defensive guardrail
+        except Exception as exc:
             raise RetrievalError(f"embedding provider failed: {exc}") from exc
 
         client = self._ensure_client()
