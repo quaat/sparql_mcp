@@ -54,6 +54,7 @@ from evals_rag.retrieval import (
     MockOntologyRetriever,
     OntologyRetriever,
     QdrantOntologyRetriever,
+    VectorizerOntologyRetriever,
 )
 from graph_mcp.models.literals import OCEAN_KG_PREFIXES
 
@@ -111,7 +112,24 @@ def build_retriever(
             retriever=retriever,
             description=f"qdrant ({settings.qdrant_url}, collection={settings.qdrant_collection})",
         )
-    raise ValueError(f"unknown retriever: {name!r}; expected 'mock' or 'qdrant'")
+    if name == "vectorizer":
+        # Delegates everything (embedding, Qdrant, reranking, graph-aware
+        # scoring) to ``ontology_vectorizer``. Reads its own configuration
+        # from the documented FOUNDRY_* / QDRANT_* environment variables.
+        ontology_id = (
+            os.environ.get("ONTOLOGY_VECTORIZER_DEFAULT_ONTOLOGY_ID") or None
+        )
+        retriever = VectorizerOntologyRetriever.from_env(
+            ontology_id=ontology_id
+        )
+        descr = f"vectorizer (collection={settings.qdrant_collection}"
+        if ontology_id:
+            descr += f", ontology_id={ontology_id}"
+        descr += ")"
+        return _RetrieverChoice(retriever=retriever, description=descr)
+    raise ValueError(
+        f"unknown retriever: {name!r}; expected 'mock', 'qdrant', or 'vectorizer'"
+    )
 
 
 def build_reranker(
@@ -526,7 +544,16 @@ async def _main_async(args: argparse.Namespace) -> int:
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="graph-mcp-rag-evals")
     parser.add_argument("--planner", default="rag", choices=("rag", "deterministic"))
-    parser.add_argument("--retriever", default="mock", choices=("mock", "qdrant"))
+    parser.add_argument(
+        "--retriever",
+        default="mock",
+        choices=("mock", "qdrant", "vectorizer"),
+        help=(
+            "Retrieval backend: 'mock' uses local schema only; 'qdrant' is the "
+            "legacy direct Qdrant retriever; 'vectorizer' delegates to the "
+            "ontology_vectorizer library (preferred)."
+        ),
+    )
     parser.add_argument(
         "--reranker",
         default="heuristic",
